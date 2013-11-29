@@ -1538,6 +1538,10 @@ static const struct parse_data ssid_fields[] = {
 	{ STRe(client_cert) },
 	{ STRe(private_key) },
 	{ STR_KEYe(private_key_passwd) },
+#ifdef CONFIG_RILD_FUNCS
+	{ STR_LENe(sim_slot)},
+	{ STR_LENe(imsi)},
+#endif
 	{ STRe(dh_file) },
 	{ STRe(subject_match) },
 	{ STRe(altsubject_match) },
@@ -1745,6 +1749,10 @@ static void eap_peer_config_free(struct eap_peer_config *eap)
 	os_free(eap->client_cert);
 	os_free(eap->private_key);
 	os_free(eap->private_key_passwd);
+#ifdef CONFIG_RILD_FUNCS
+	os_free(eap->sim_slot);
+	os_free(eap->imsi);
+#endif
 	os_free(eap->dh_file);
 	os_free(eap->subject_match);
 	os_free(eap->altsubject_match);

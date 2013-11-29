@@ -873,7 +873,15 @@ ifdef CONFIG_NATIVE_WINDOWS
 else
 LIBS += -lpcsclite -lpthread
 endif
-endif
+else #CONFIG_PCSC
+ifdef CONFIG_RILD
+L_CFLAGS += -DCONFIG_RILD_FUNCS
+OBJS += src/utils/rild_funcs.c
+ifdef CONFIG_RILD_MULTI_SIM #multiple sim card support, for example dual sim card
+L_CFLAGS += -DCONFIG_RILD_FUNCS_MULTI_SIM
+endif #CONFIG_RILD_MULTI_SIM
+endif #CONFIG_RILD
+endif #CONFIG_PCSC
 
 ifdef CONFIG_SIM_SIMULATOR
 L_CFLAGS += -DCONFIG_SIM_SIMULATOR
