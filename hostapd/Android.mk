@@ -36,6 +36,10 @@ ifeq ($(BOARD_WLAN_DEVICE), mrvl)
 L_CFLAGS += -DANDROID_P2P
 endif
 
+ifeq ($(TARGET_BOARD_PLATFORM),mt6589)
+L_CFLAGS += -DMTK_MT6589
+endif
+
 # Use Android specific directory for control interface sockets
 L_CFLAGS += -DCONFIG_CTRL_IFACE_CLIENT_DIR=\"/data/misc/wifi/sockets\"
 L_CFLAGS += -DCONFIG_CTRL_IFACE_DIR=\"/data/system/hostapd\"
@@ -870,6 +874,10 @@ endif
 
 ifdef CONFIG_ANDROID_LOG
 L_CFLAGS += -DCONFIG_ANDROID_LOG
+endif
+
+ifeq ($(TARGET_BOARD_PLATFORM),mt6589)
+L_CFLAGS += -DMTK_MT6589
 endif
 
 OBJS_c = hostapd_cli.c src/common/wpa_ctrl.c src/utils/os_$(CONFIG_OS).c

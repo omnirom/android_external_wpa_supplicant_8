@@ -352,8 +352,8 @@ static inline int have_ifidx(struct wpa_driver_nl80211_data *drv, int ifidx)
 }
 #endif /* HOSTAPD */
 #ifdef ANDROID
-extern int wpa_driver_nl80211_driver_cmd(void *priv, char *cmd, char *buf,
-					 size_t buf_len);
+//extern int wpa_driver_nl80211_driver_cmd(void *priv, char *cmd, char *buf,
+//					 size_t buf_len);
 #endif
 
 static int wpa_driver_nl80211_set_freq(struct i802_bss *bss,
@@ -10748,6 +10748,247 @@ const u8 * wpa_driver_nl80211_get_macaddr(void *priv)
 		return NULL;
 
 	return bss->addr;
+}
+
+
+static int wpa_driver_nl80211_driver_cmd(void *priv,
+    char *cmd, char *buf, size_t buf_len)
+{
+    struct i802_bss *bss = priv;
+        struct wpa_driver_nl80211_data *drv = bss->drv;
+        struct nl_msg *msg, *cqm = NULL;
+    int ret = -1;
+
+    wpa_printf(MSG_DEBUG, "%s %s", __func__, cmd);
+
+    if (os_strcasecmp(cmd, "start") == 0) {
+                if (linux_set_iface_flags(drv->global->ioctl_sock, 
+                                       drv->first_bss.ifname, 1)) {
+                        wpa_printf(MSG_INFO, "nl80211: Could not set interface UP \n");
+                }
+        ret = wpa_driver_nl80211_set_mode(bss, NL80211_IFTYPE_STATION);
+        //ret = wpa_driver_wext_driver_start(drv, 0);
+                //ret = wpa_driver_wext_init_iface(drv);
+        if (ret == 0)
+            wpa_msg(drv->ctx, MSG_INFO, "CTRL-EVENT-DRIVER-STATE STARTED");
+        wpa_printf(MSG_DEBUG,"DRIVER-START: %d", ret);
+    } else if (os_strcasecmp(cmd, "stop") == 0) {
+        ret = wpa_driver_nl80211_disassociate(bss, drv->bssid, WLAN_REASON_DEAUTH_LEAVING);
+        //ret = wpa_driver_wext_driver_start(drv, 1);
+        if (ret == 0)
+            wpa_msg(drv->ctx, MSG_INFO, "CTRL-EVENT-DRIVER-STATE STOPPED");
+        wpa_printf(MSG_DEBUG,"DRIVER-STOP: %d", ret);
+                if (linux_set_iface_flags(drv->global->ioctl_sock, 
+                                       drv->first_bss.ifname, 0)) {
+                        wpa_printf(MSG_INFO, "nl80211: Could not set interface Down \n");
+                }
+    } else if (os_strcasecmp(cmd, "macaddr") == 0) {
+        /* Use the wpa_s->ownaddr instead */
+    } else if (os_strcasecmp(cmd, "scan-passive") == 0) {
+        /* mt5921 linux driver take care itself. CHECKME!! */
+    } else if (os_strcasecmp(cmd, "scan-active") == 0) {
+        /* mt5921 linux driver take care itself. CHECKME!! */
+    } else if (os_strcasecmp(cmd, "linkspeed") == 0) {
+        /* Use the  .signal_poll = nl80211_signal_poll instead */
+    } else if (os_strncasecmp(cmd, "scan-channels", 13) == 0) {
+        /* mt5921 linux driver doesn't support scan a specific channel */
+    } else if (os_strcasecmp(cmd, "rssi") == 0) {
+        /* Use the  .signal_poll = nl80211_signal_poll instead */
+    } else if (os_strncasecmp(cmd, "powermode", 9) == 0) {
+        u32 mode;
+        char *cp = cmd + 9;
+        char *endp;
+
+        if (*cp != '\0') {
+            mode = (u32)strtol(cp, &endp, 0);
+            if (endp != cp) {
+                ret = 0;
+//                if (mode <= 3)
+//                    ret = wpa_driver_wext_driver_set_power(drv, mode);
+//                if (mode == 1) /* ACTIVE */
+//                    ret = wpa_driver_wext_driver_set_rts(drv, 0);
+            }
+        }
+    } else if (os_strncasecmp(cmd, "getpower", 8) == 0) {
+        u32 mode;
+//        ret = wpa_driver_wext_driver_get_power(drv, &mode);
+        if (ret == 0) {
+            ret = snprintf(buf, buf_len, "powermode = %u\n", mode);
+            wpa_printf(MSG_DEBUG, "%s", buf);
+            if (ret < (int)buf_len) {
+                return( ret );
+            }
+        }
+    } else if (os_strncasecmp(cmd, "get-rts-threshold", 17) == 0) {
+        u32 thd;
+//        ret = wpa_driver_wext_driver_get_rts(drv, &thd);
+        if (ret == 0) {
+            ret = snprintf(buf, buf_len, "rts-threshold = %u\n", thd);
+            wpa_printf(MSG_DEBUG, "%s", buf);
+            if (ret < (int)buf_len)
+                return ret;
+        }
+    } else if (os_strncasecmp(cmd, "set-rts-threshold", 17) == 0) {
+        u32 thd = 0;
+        char *cp = cmd + 17;
+        char *endp;
+        if (*cp != '\0') {
+            thd = (u32)strtol(cp, &endp, 0);
+//            if (endp != cp)
+//                ret = wpa_driver_wext_driver_set_rts(drv, thd);
+        }
+        } else if (os_strncasecmp(cmd, "rxfilter-add", 12) == 0 ) {
+                unsigned long sw_cmd = 0x9F000000;
+                unsigned long idx = 0;
+                char *cp = cmd + 12;
+                char *endp;
+        
+                if (*cp != '\0') {
+                        idx = (u32)strtol(cp, &endp, 0);
+                        if (endp != cp) {
+                                idx += 0x00900200;
+                                wpa_driver_nl80211_driver_sw_cmd(priv, 1, &sw_cmd, &idx);
+                                ret = 0;
+                        }
+                }
+        } else if (os_strncasecmp(cmd, "rxfilter-remove", 15) == 0 ) {
+                unsigned long sw_cmd = 0x9F000000;
+                unsigned long idx = 0;
+                char *cp = cmd + 15;
+                char *endp;
+        
+                if (*cp != '\0') {
+                        idx = (u32)strtol(cp, &endp, 0);
+                        if (endp != cp) {
+                                idx += 0x00900300;
+                                wpa_driver_nl80211_driver_sw_cmd(priv, 1, &sw_cmd, &idx);
+                                ret = 0;
+                        }
+                }
+        } else if (os_strncasecmp(cmd, "rxfilter-stop", 13) == 0 ) {
+                unsigned long sw_cmd = 0x9F000000;
+                unsigned long idx = 0x00900000;
+                wpa_driver_nl80211_driver_sw_cmd(priv, 1, &sw_cmd, &idx);
+                ret = 0;
+        } else if (os_strncasecmp(cmd, "rxfilter-start", 14) == 0 ) {
+                unsigned long sw_cmd = 0x9F000000;
+                unsigned long idx = 0x00900100;
+                wpa_driver_nl80211_driver_sw_cmd(priv, 1, &sw_cmd, &idx);
+                ret = 0;
+    } else if (os_strcasecmp(cmd, "btcoexscan-start") == 0) {
+        ret = 0; /* mt5921 linux driver not implement yet */
+    } else if (os_strcasecmp(cmd, "btcoexscan-stop") == 0) {
+        ret = 0; /* mt5921 linux driver not implement yet */
+    } else if( os_strncasecmp(cmd, "btcoexmode", 10) == 0 ) {
+        ret = 0; /* mt5921 linux driver not implement yet */
+    } else if (os_strncasecmp(cmd, "smt-rate", 8) == 0 ) {
+        unsigned long sw_cmd = 0xFFFF0123;
+        unsigned long idx = 0;
+        char *cp = cmd + 8;
+        char *endp;
+
+        if (*cp != '\0') {
+            idx = (u32)strtol(cp, &endp, 0);
+            if (endp != cp) {
+                wpa_driver_nl80211_driver_sw_cmd(priv, 1, &sw_cmd, &idx);
+                ret = 0;
+            }
+        }
+    } else if (os_strncasecmp(cmd, "smt-test-on", 11) == 0 ) {
+        unsigned long sw_cmd = 0xFFFF1234;
+        unsigned long idx = 0;
+        wpa_driver_nl80211_driver_sw_cmd(priv, 1, &sw_cmd, &idx);
+        ret = 0;
+    } else if (os_strncasecmp(cmd, "smt-test-off", 12) == 0 ) {
+        unsigned long sw_cmd = 0xFFFF1235;
+        unsigned long idx = 0;
+        wpa_driver_nl80211_driver_sw_cmd(priv, 1, &sw_cmd, &idx);
+        ret = 0;
+    } else {
+        wpa_printf(MSG_DEBUG,"Unsupported command");
+    }
+
+    return ret;
+}
+
+
+int wpa_driver_nl80211_disassociate(void *priv, const u8 *addr,
+                                           int reason_code)
+{
+        struct i802_bss *bss = priv;
+        struct wpa_driver_nl80211_data *drv = bss->drv;
+        if (!(drv->capa.flags & WPA_DRIVER_FLAGS_SME))
+                return wpa_driver_nl80211_disconnect(drv, addr, reason_code);
+        wpa_printf(MSG_DEBUG, "%s", __func__);
+        drv->associated = 0;
+        return wpa_driver_nl80211_mlme(drv, addr, NL80211_CMD_DISASSOCIATE,
+                                       reason_code, 0);
+}
+
+
+int wpa_driver_nl80211_driver_sw_cmd(void *priv,
+    int set, unsigned long *adr, unsigned long *dat)
+{
+    struct i802_bss *bss = priv;
+    struct wpa_driver_nl80211_data *drv = bss->drv;
+    struct wpa_driver_sw_cmd_params params;
+    struct nl_msg *msg, *cqm = NULL;
+    int ret = 0;
+    
+    os_memset(&params, 0, sizeof(params));
+    
+    params.hdr.index = 1;
+    params.hdr.index = params.hdr.index | (0x01 << 24);
+    params.hdr.buflen = sizeof(struct wpa_driver_sw_cmd_params);
+    
+    params.adr = *adr;
+    params.data = *dat;
+
+    if(set)
+        params.set = 1;
+    else
+        params.set = 0;
+
+#if 1
+    wpa_driver_nl80211_testmode(priv, (u8 *)&params, sizeof(struct wpa_driver_sw_cmd_params));
+
+    return 0;
+#else
+    msg = nlmsg_alloc();
+        if (!msg)
+                return -1;
+
+        wpa_printf(MSG_DEBUG, "nl80211: wpa_driver_nl80211_driver_sw_cmd\n");
+
+    nl80211_cmd(drv, msg, 0, NL80211_CMD_TESTMODE);
+
+        NLA_PUT_U32(msg, NL80211_ATTR_IFINDEX, drv->ifindex);
+        NLA_PUT(msg, NL80211_ATTR_TESTDATA, params.hdr.buflen, (u8*)&params);
+
+    if (set){
+        if(send_and_recv_msgs(drv, msg, NULL, NULL) < 0) {
+            wpa_printf(MSG_DEBUG, "wpa_driver_nl80211_driver_sw_cmd fail");
+            ret = -1;
+        }  
+    }
+    else {
+        if (send_and_recv_msgs(drv, msg, NULL, NULL) < 0) {
+            wpa_printf(MSG_DEBUG, "wpa_driver_nl80211_driver_sw_cmd fail");
+            ret = -1;
+        }
+        else {
+            wpa_printf(MSG_DEBUG, "%s message back!\n", __func__);
+
+            //  Take the first two byte for the length of use 
+            //dat = *((unsigned long *)iwr.u.data.pointer);
+        }
+    }
+    
+    return ret;
+
+nla_put_failure:
+        return -ENOBUFS;
+#endif
 }
 
 

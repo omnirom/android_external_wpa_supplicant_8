@@ -334,7 +334,6 @@ void wpa_ctrl_cleanup(void);
 #define WPA_GLOBAL_CTRL_IFACE_PORT_LIMIT 20 /* incremented from start */
 #endif /* CONFIG_CTRL_IFACE_UDP */
 
-
 #ifdef  __cplusplus
 }
 #endif
