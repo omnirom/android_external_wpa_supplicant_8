@@ -40,6 +40,10 @@
 #include "autoscan.h"
 #include "wnm_sta.h"
 
+#ifdef CONFIG_PRYFI
+#include "drivers/pryfi.h"
+#endif
+
 extern struct wpa_driver_ops *wpa_drivers[];
 
 static int wpa_supplicant_global_iface_list(struct wpa_global *global,
@@ -114,10 +118,20 @@ static int pno_start(struct wpa_supplicant *wpa_s)
 	if (wpa_s->conf->filter_rssi)
 		params.filter_rssi = wpa_s->conf->filter_rssi;
 
+#ifdef CONFIG_PRYFI
+	pryfi_pno_start(wpa_s);
+#endif
+
 	ret = wpa_drv_sched_scan(wpa_s, &params, 10 * 1000);
 	os_free(params.filter_ssids);
 	if (ret == 0)
 		wpa_s->pno = 1;
+
+#ifdef CONFIG_PRYFI
+	if (!wpa_s->pno)
+		pryfi_pno_stop(wpa_s);
+#endif
+
 	return ret;
 }
 
@@ -130,6 +144,10 @@ static int pno_stop(struct wpa_supplicant *wpa_s)
 		wpa_s->pno = 0;
 		ret = wpa_drv_stop_sched_scan(wpa_s);
 	}
+
+#ifdef CONFIG_PRYFI
+	pryfi_pno_stop(wpa_s);
+#endif
 
 	if (wpa_s->wpa_state == WPA_SCANNING)
 		wpa_supplicant_req_scan(wpa_s, 0, 0);
@@ -184,7 +202,7 @@ static int set_disallow_aps(struct wpa_supplicant *wpa_s, char *val)
 	struct wpa_ssid *c;
 
 	/*
-	 * disallow_list ::= <ssid_spec> | <bssid_spec> | <disallow_list> | “”
+	 * disallow_list ::= <ssid_spec> | <bssid_spec> | <disallow_list> | Â“Â”
 	 * SSID_SPEC ::= ssid <SSID_HEX>
 	 * BSSID_SPEC ::= bssid <BSSID_HEX>
 	 */

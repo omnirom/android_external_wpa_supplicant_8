@@ -14,6 +14,9 @@
 #include "utils/common.h"
 #include "linux_ioctl.h"
 
+#ifdef CONFIG_PRYFI
+#include "pryfi.h"
+#endif
 
 int linux_set_iface_flags(int sock, const char *ifname, int dev_up)
 {
@@ -95,6 +98,10 @@ int linux_get_ifhwaddr(int sock, const char *ifname, u8 *addr)
 		return -1;
 	}
 	os_memcpy(addr, ifr.ifr_hwaddr.sa_data, ETH_ALEN);
+
+#ifdef CONFIG_PRYFI
+	pryfi_store_hwaddr(ifname, addr);
+#endif
 
 	return 0;
 }
