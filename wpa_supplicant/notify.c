@@ -23,6 +23,10 @@
 #include "sme.h"
 #include "notify.h"
 
+#ifdef CONFIG_PRYFI
+#include "drivers/pryfi.h"
+#endif
+
 int wpas_notify_supplicant_initialized(struct wpa_global *global)
 {
 #ifdef CONFIG_DBUS
@@ -166,6 +170,10 @@ void wpas_notify_scanning(struct wpa_supplicant *wpa_s)
 
 void wpas_notify_scan_done(struct wpa_supplicant *wpa_s, int success)
 {
+#ifdef CONFIG_PRYFI
+	pryfi_notify_scan_done(wpa_s, success);
+#endif
+
 	wpas_dbus_signal_scan_done(wpa_s, success);
 }
 

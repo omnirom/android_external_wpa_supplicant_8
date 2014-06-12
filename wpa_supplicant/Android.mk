@@ -1535,6 +1535,14 @@ ifndef LDO
 LDO=$(CC)
 endif
 
+ifdef CONFIG_PRYFI
+L_CFLAGS += -DCONFIG_PRYFI
+OBJS += src/drivers/pryfi.c
+ifdef CONFIG_PRYFI_LOG
+L_CFLAGS += -DCONFIG_PRYFI_LOG
+endif
+endif
+
 ########################
 
 include $(CLEAR_VARS)

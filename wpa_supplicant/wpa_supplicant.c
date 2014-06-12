@@ -52,6 +52,10 @@
 #include "hs20_supplicant.h"
 #include "wnm_sta.h"
 
+#ifdef CONFIG_PRYFI
+#include "drivers/pryfi.h"
+#endif
+
 const char *wpa_supplicant_version =
 "wpa_supplicant v" VERSION_STR "\n"
 "Copyright (c) 2003-2013, Jouni Malinen <j@w1.fi> and contributors";
@@ -1270,6 +1274,10 @@ int wpas_build_ext_capab(struct wpa_supplicant *wpa_s, u8 *buf)
 void wpa_supplicant_associate(struct wpa_supplicant *wpa_s,
 			      struct wpa_bss *bss, struct wpa_ssid *ssid)
 {
+#ifdef CONFIG_PRYFI
+	pryfi_pre_associate(wpa_s, bss, ssid);
+#endif
+
 	u8 wpa_ie[200];
 	size_t wpa_ie_len;
 	int use_crypt, ret, i, bssid_changed;

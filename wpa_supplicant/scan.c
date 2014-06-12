@@ -23,6 +23,9 @@
 #include "bss.h"
 #include "scan.h"
 
+#ifdef CONFIG_PRYFI
+#include "drivers/pryfi.h"
+#endif
 
 static void wpa_supplicant_gen_assoc_event(struct wpa_supplicant *wpa_s)
 {
@@ -218,6 +221,10 @@ static void int_array_sort_unique(int *a)
 int wpa_supplicant_trigger_scan(struct wpa_supplicant *wpa_s,
 				struct wpa_driver_scan_params *params)
 {
+#ifdef CONFIG_PRYFI
+	pryfi_pre_trigger_scan(wpa_s, params);
+#endif
+
 	int ret;
 
 	wpa_supplicant_notify_scanning(wpa_s, 1);
@@ -979,6 +986,11 @@ int wpa_supplicant_req_sched_scan(struct wpa_supplicant *wpa_s)
 	int wildcard = 0;
 	int need_ssids;
 
+#ifdef CONFIG_PRYFI
+	// emulate disable_scan_offload being set, already the case for many devices
+	return -1;
+#endif
+
 	if (!wpa_s->sched_scan_supported)
 		return -1;
 
@@ -1257,6 +1269,10 @@ void wpa_supplicant_cancel_sched_scan(struct wpa_supplicant *wpa_s)
 void wpa_supplicant_notify_scanning(struct wpa_supplicant *wpa_s,
 				    int scanning)
 {
+#ifdef CONFIG_PRYFI
+	pryfi_notify_scanning(wpa_s, scanning);
+#endif
+
 	if (wpa_s->scanning != scanning) {
 		wpa_s->scanning = scanning;
 		wpas_notify_scanning(wpa_s);
