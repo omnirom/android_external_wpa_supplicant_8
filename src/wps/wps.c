@@ -18,6 +18,7 @@
 #ifdef CONFIG_WPS_TESTING
 int wps_version_number = 0x20;
 int wps_testing_dummy_cred = 0;
+int wps_corrupt_pkhash = 0;
 #endif /* CONFIG_WPS_TESTING */
 
 
@@ -58,6 +59,10 @@ struct wps_data * wps_init(const struct wps_config *cfg)
 	}
 
 #ifdef CONFIG_WPS_NFC
+	if (cfg->pin == NULL &&
+	    cfg->dev_pw_id == DEV_PW_NFC_CONNECTION_HANDOVER)
+		data->dev_pw_id = cfg->dev_pw_id;
+
 	if (cfg->wps->ap && !cfg->registrar && cfg->wps->ap_nfc_dev_pw_id) {
 		/* Keep AP PIN as alternative Device Password */
 		data->alt_dev_pw_id = data->dev_pw_id;
@@ -84,7 +89,7 @@ struct wps_data * wps_init(const struct wps_config *cfg)
 	if (cfg->pbc) {
 		/* Use special PIN '00000000' for PBC */
 		data->dev_pw_id = DEV_PW_PUSHBUTTON;
-		os_free(data->dev_password);
+		bin_clear_free(data->dev_password, data->dev_password_len);
 		data->dev_password = (u8 *) os_strdup("00000000");
 		if (data->dev_password == NULL) {
 			os_free(data);
@@ -117,7 +122,8 @@ struct wps_data * wps_init(const struct wps_config *cfg)
 		data->new_ap_settings =
 			os_malloc(sizeof(*data->new_ap_settings));
 		if (data->new_ap_settings == NULL) {
-			os_free(data->dev_password);
+			bin_clear_free(data->dev_password,
+				       data->dev_password_len);
 			os_free(data);
 			return NULL;
 		}
@@ -132,6 +138,12 @@ struct wps_data * wps_init(const struct wps_config *cfg)
 
 	data->use_psk_key = cfg->use_psk_key;
 	data->pbc_in_m1 = cfg->pbc_in_m1;
+
+	if (cfg->peer_pubkey_hash) {
+		os_memcpy(data->peer_pubkey_hash, cfg->peer_pubkey_hash,
+			  WPS_OOB_PUBKEY_HASH_LEN);
+		data->peer_pubkey_hash_set = 1;
+	}
 
 	return data;
 }
@@ -162,13 +174,12 @@ void wps_deinit(struct wps_data *data)
 	wpabuf_free(data->dh_pubkey_e);
 	wpabuf_free(data->dh_pubkey_r);
 	wpabuf_free(data->last_msg);
-	os_free(data->dev_password);
-	os_free(data->alt_dev_password);
-	os_free(data->new_psk);
+	bin_clear_free(data->dev_password, data->dev_password_len);
+	bin_clear_free(data->alt_dev_password, data->alt_dev_password_len);
+	bin_clear_free(data->new_psk, data->new_psk_len);
 	wps_device_data_free(&data->peer_dev);
-	os_free(data->new_ap_settings);
+	bin_clear_free(data->new_ap_settings, sizeof(*data->new_ap_settings));
 	dh5_free(data->dh_ctx);
-	os_free(data->nfc_pw_token);
 	os_free(data);
 }
 
@@ -501,13 +512,11 @@ struct wpabuf * wps_build_probe_req_ie(u16 pw_id, struct wps_device_data *dev,
 	    wps_build_assoc_state(NULL, ie) ||
 	    wps_build_config_error(ie, WPS_CFG_NO_ERROR) ||
 	    wps_build_dev_password_id(ie, pw_id) ||
-#ifdef CONFIG_WPS2
 	    wps_build_manufacturer(dev, ie) ||
 	    wps_build_model_name(dev, ie) ||
 	    wps_build_model_number(dev, ie) ||
 	    wps_build_dev_name(dev, ie) ||
 	    wps_build_wfa_ext(ie, req_type == WPS_REQ_ENROLLEE, NULL, 0) ||
-#endif /* CONFIG_WPS2 */
 	    wps_build_req_dev_type(dev, ie, num_req_dev_types, req_dev_types)
 	    ||
 	    wps_build_secondary_dev_type(dev, ie)
@@ -515,13 +524,6 @@ struct wpabuf * wps_build_probe_req_ie(u16 pw_id, struct wps_device_data *dev,
 		wpabuf_free(ie);
 		return NULL;
 	}
-
-#ifndef CONFIG_WPS2
-	if (dev->p2p && wps_build_dev_name(dev, ie)) {
-		wpabuf_free(ie);
-		return NULL;
-	}
-#endif /* CONFIG_WPS2 */
 
 	return wps_ie_encapsulate(ie);
 }

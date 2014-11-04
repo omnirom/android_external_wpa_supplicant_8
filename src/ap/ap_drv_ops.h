@@ -1,6 +1,6 @@
 /*
  * hostapd - Driver operations
- * Copyright (c) 2009, Jouni Malinen <j@w1.fi>
+ * Copyright (c) 2009-2014, Jouni Malinen <j@w1.fi>
  *
  * This software may be distributed under the terms of the BSD license.
  * See README for more details.
@@ -14,6 +14,7 @@ struct wpa_bss_params;
 struct wpa_driver_scan_params;
 struct ieee80211_ht_capabilities;
 struct ieee80211_vht_capabilities;
+struct hostapd_freq_params;
 
 u32 hostapd_sta_flags_to_drv(u32 flags);
 int hostapd_build_ap_extra_ies(struct hostapd_data *hapd,
@@ -39,7 +40,7 @@ int hostapd_sta_add(struct hostapd_data *hapd,
 		    u16 listen_interval,
 		    const struct ieee80211_ht_capabilities *ht_capab,
 		    const struct ieee80211_vht_capabilities *vht_capab,
-		    u32 flags, u8 qosinfo);
+		    u32 flags, u8 qosinfo, u8 vht_opmode);
 int hostapd_set_privacy(struct hostapd_data *hapd, int enabled);
 int hostapd_set_generic_elem(struct hostapd_data *hapd, const u8 *elem,
 			     size_t elem_len);
@@ -48,7 +49,7 @@ int hostapd_set_ssid(struct hostapd_data *hapd, const u8 *buf, size_t len);
 int hostapd_if_add(struct hostapd_data *hapd, enum wpa_driver_if_type type,
 		   const char *ifname, const u8 *addr, void *bss_ctx,
 		   void **drv_priv, char *force_ifname, u8 *if_addr,
-		   const char *bridge);
+		   const char *bridge, int use_existing);
 int hostapd_if_remove(struct hostapd_data *hapd, enum wpa_driver_if_type type,
 		      const char *ifname);
 int hostapd_set_ieee8021x(struct hostapd_data *hapd,
@@ -101,6 +102,15 @@ int hostapd_sta_assoc(struct hostapd_data *hapd, const u8 *addr,
 		      int reassoc, u16 status, const u8 *ie, size_t len);
 int hostapd_add_tspec(struct hostapd_data *hapd, const u8 *addr,
 		      u8 *tspec_ie, size_t tspec_ielen);
+int hostapd_start_dfs_cac(struct hostapd_iface *iface, int mode, int freq,
+			  int channel, int ht_enabled, int vht_enabled,
+			  int sec_channel_offset, int vht_oper_chwidth,
+			  int center_segment0, int center_segment1);
+int hostapd_set_freq_params(struct hostapd_freq_params *data, int mode,
+			    int freq, int channel, int ht_enabled,
+			    int vht_enabled, int sec_channel_offset,
+			    int vht_oper_chwidth, int center_segment0,
+			    int center_segment1, u32 vht_caps);
 
 
 #include "drivers/driver.h"
@@ -108,6 +118,9 @@ int hostapd_add_tspec(struct hostapd_data *hapd, const u8 *addr,
 int hostapd_drv_wnm_oper(struct hostapd_data *hapd,
 			 enum wnm_oper oper, const u8 *peer,
 			 u8 *buf, u16 *buf_len);
+
+int hostapd_drv_set_qos_map(struct hostapd_data *hapd, const u8 *qos_map_set,
+			    u8 qos_map_set_len);
 
 static inline int hostapd_drv_set_countermeasures(struct hostapd_data *hapd,
 						  int enabled)
@@ -233,6 +246,49 @@ static inline int hostapd_drv_get_survey(struct hostapd_data *hapd,
 	if (!hapd->driver->get_survey)
 		return -1;
 	return hapd->driver->get_survey(hapd->drv_priv, freq);
+}
+
+static inline int hostapd_get_country(struct hostapd_data *hapd, char *alpha2)
+{
+	if (hapd->driver == NULL || hapd->driver->get_country == NULL)
+		return -1;
+	return hapd->driver->get_country(hapd->drv_priv, alpha2);
+}
+
+static inline const char * hostapd_drv_get_radio_name(struct hostapd_data *hapd)
+{
+	if (hapd->driver == NULL || hapd->drv_priv == NULL ||
+	    hapd->driver->get_radio_name == NULL)
+		return NULL;
+	return hapd->driver->get_radio_name(hapd->drv_priv);
+}
+
+static inline int hostapd_drv_switch_channel(struct hostapd_data *hapd,
+					     struct csa_settings *settings)
+{
+	if (hapd->driver == NULL || hapd->driver->switch_channel == NULL)
+		return -ENOTSUP;
+
+	return hapd->driver->switch_channel(hapd->drv_priv, settings);
+}
+
+static inline int hostapd_drv_status(struct hostapd_data *hapd, char *buf,
+				     size_t buflen)
+{
+	if (hapd->driver == NULL || hapd->driver->status == NULL)
+		return -1;
+	return hapd->driver->status(hapd->drv_priv, buf, buflen);
+}
+
+static inline int hostapd_drv_vendor_cmd(struct hostapd_data *hapd,
+					 int vendor_id, int subcmd,
+					 const u8 *data, size_t data_len,
+					 struct wpabuf *buf)
+{
+	if (hapd->driver == NULL || hapd->driver->vendor_cmd == NULL)
+		return -1;
+	return hapd->driver->vendor_cmd(hapd->drv_priv, vendor_id, subcmd, data,
+					data_len, buf);
 }
 
 #endif /* AP_DRV_OPS */

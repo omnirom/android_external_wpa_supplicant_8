@@ -459,6 +459,14 @@ typedef u64 __bitwise le64;
 #endif /* __GNUC__ */
 #endif /* __must_check */
 
+#ifndef __maybe_unused
+#if __GNUC__ > 3 || (__GNUC__ == 3 && __GNUC_MINOR__ >= 4)
+#define __maybe_unused __attribute__((unused))
+#else
+#define __maybe_unused
+#endif /* __GNUC__ */
+#endif /* __must_check */
+
 int hwaddr_aton(const char *txt, u8 *addr);
 int hwaddr_compact_aton(const char *txt, u8 *addr);
 int hwaddr_aton2(const char *txt, u8 *addr);
@@ -485,6 +493,7 @@ const char * wpa_ssid_txt(const u8 *ssid, size_t ssid_len);
 
 char * wpa_config_parse_string(const char *value, size_t *len);
 int is_hex(const u8 *data, size_t len);
+int find_first_bit(u32 value);
 size_t merge_byte_arrays(u8 *res, size_t res_len,
 			 const u8 *src1, size_t src1_len,
 			 const u8 *src2, size_t src2_len);
@@ -503,6 +512,31 @@ static inline int is_broadcast_ether_addr(const u8 *a)
 #define broadcast_ether_addr (const u8 *) "\xff\xff\xff\xff\xff\xff"
 
 #include "wpa_debug.h"
+
+
+struct wpa_freq_range_list {
+	struct wpa_freq_range {
+		unsigned int min;
+		unsigned int max;
+	} *range;
+	unsigned int num;
+};
+
+int freq_range_list_parse(struct wpa_freq_range_list *res, const char *value);
+int freq_range_list_includes(const struct wpa_freq_range_list *list,
+			     unsigned int freq);
+char * freq_range_list_str(const struct wpa_freq_range_list *list);
+
+int int_array_len(const int *a);
+void int_array_concat(int **res, const int *a);
+void int_array_sort_unique(int *a);
+void int_array_add_unique(int **res, int a);
+
+#define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
+
+
+void str_clear_free(char *str);
+void bin_clear_free(void *bin, size_t len);
 
 
 /*

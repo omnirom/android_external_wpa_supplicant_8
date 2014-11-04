@@ -40,8 +40,13 @@ ifeq ($(BOARD_WLAN_DEVICE), qcwcn)
 L_CFLAGS += -DANDROID_P2P
 endif
 
-ifeq ($(BOARD_WLAN_DEVICE), mrvl)
+# Disable unused parameter warnings
+L_CFLAGS += -Wno-unused-parameter
+
+# Set Android extended P2P functionality
 L_CFLAGS += -DANDROID_P2P
+ifeq ($(BOARD_HOSTAPD_PRIVATE_LIB),)
+L_CFLAGS += -DANDROID_P2P_STUB
 endif
 
 ifeq ($(BOARD_WIFI_SKIP_CAPABILITIES), true)
@@ -57,16 +62,17 @@ ifeq ($(TARGET_ARCH),arm)
 L_CFLAGS += -mabi=aapcs-linux
 endif
 
-# To allow non-ASCII characters in SSID
-L_CFLAGS += -DWPA_UNICODE_SSID
-
 INCLUDES = $(LOCAL_PATH)
 INCLUDES += $(LOCAL_PATH)/src
 INCLUDES += $(LOCAL_PATH)/src/utils
 INCLUDES += external/openssl/include
 INCLUDES += system/security/keystore/include
 ifdef CONFIG_DRIVER_NL80211
+ifneq ($(wildcard external/libnl),)
+INCLUDES += external/libnl/include
+else
 INCLUDES += external/libnl-headers
+endif
 endif
 
 
@@ -120,7 +126,6 @@ NEED_RC4=y
 NEED_AES=y
 NEED_MD5=y
 NEED_SHA1=y
-NEED_SHA256=y
 
 OBJS += src/drivers/drivers.c
 L_CFLAGS += -DHOSTAPD
@@ -153,10 +158,10 @@ OBJS += src/eapol_auth/eapol_auth_sm.c
 
 
 ifndef CONFIG_NO_DUMP_STATE
-# define HOSTAPD_DUMP_STATE to include SIGUSR1 handler for dumping state to
-# a file (undefine it, if you want to save in binary size)
+# define HOSTAPD_DUMP_STATE to include support for dumping internal state
+# through control interface commands (undefine it, if you want to save in
+# binary size)
 L_CFLAGS += -DHOSTAPD_DUMP_STATE
-OBJS += dump_state.c
 OBJS += src/eapol_auth/eapol_auth_dump.c
 endif
 
@@ -211,6 +216,10 @@ endif
 ifdef CONFIG_PEERKEY
 L_CFLAGS += -DCONFIG_PEERKEY
 OBJS += src/ap/peerkey_auth.c
+endif
+
+ifdef CONFIG_HS20
+NEED_AES_OMAC1=y
 endif
 
 ifdef CONFIG_IEEE80211W
@@ -367,7 +376,7 @@ ifdef CONFIG_EAP_GPSK
 L_CFLAGS += -DEAP_SERVER_GPSK
 OBJS += src/eap_server/eap_server_gpsk.c src/eap_common/eap_gpsk_common.c
 ifdef CONFIG_EAP_GPSK_SHA256
-L_CFLAGS += -DEAP_SERVER_GPSK_SHA256
+L_CFLAGS += -DEAP_GPSK_SHA256
 endif
 NEED_SHA256=y
 NEED_AES_OMAC1=y
@@ -401,10 +410,6 @@ NEED_AES_UNWRAP=y
 endif
 
 ifdef CONFIG_WPS
-ifdef CONFIG_WPS2
-L_CFLAGS += -DCONFIG_WPS2
-endif
-
 L_CFLAGS += -DCONFIG_WPS -DEAP_SERVER_WSC
 OBJS += src/utils/uuid.c
 OBJS += src/ap/wps_hostapd.c
@@ -543,15 +548,12 @@ ifeq ($(CONFIG_TLS), gnutls)
 ifdef TLS_FUNCS
 OBJS += src/crypto/tls_gnutls.c
 LIBS += -lgnutls -lgpg-error
-ifdef CONFIG_GNUTLS_EXTRA
-L_CFLAGS += -DCONFIG_GNUTLS_EXTRA
-LIBS += -lgnutls-extra
-endif
 endif
 OBJS += src/crypto/crypto_gnutls.c
 HOBJS += src/crypto/crypto_gnutls.c
 ifdef NEED_FIPS186_2_PRF
-OBJS += src/crypto/fips_prf_gnutls.c
+OBJS += src/crypto/fips_prf_internal.c
+OBJS += src/crypto/sha1-internal.c
 endif
 LIBS += -lgcrypt
 LIBS_h += -lgcrypt
@@ -578,7 +580,8 @@ LIBS += -lssl3
 endif
 OBJS += src/crypto/crypto_nss.c
 ifdef NEED_FIPS186_2_PRF
-OBJS += src/crypto/fips_prf_nss.c
+OBJS += src/crypto/fips_prf_internal.c
+OBJS += src/crypto/sha1-internal.c
 endif
 LIBS += -lnss3
 LIBS_h += -lnss3
@@ -843,6 +846,7 @@ OBJS += src/ap/wmm.c
 OBJS += src/ap/ap_list.c
 OBJS += src/ap/ieee802_11.c
 OBJS += src/ap/hw_features.c
+OBJS += src/ap/dfs.c
 L_CFLAGS += -DNEED_AP_MLME
 endif
 ifdef CONFIG_IEEE80211N
@@ -872,8 +876,18 @@ endif
 
 OBJS += src/drivers/driver_common.c
 
+ifdef CONFIG_ACS
+L_CFLAGS += -DCONFIG_ACS
+OBJS += src/ap/acs.c
+LIBS += -lm
+endif
+
 ifdef CONFIG_NO_STDOUT_DEBUG
 L_CFLAGS += -DCONFIG_NO_STDOUT_DEBUG
+endif
+
+ifdef CONFIG_DEBUG_LINUX_TRACING
+L_CFLAGS += -DCONFIG_DEBUG_LINUX_TRACING
 endif
 
 ifdef CONFIG_DEBUG_FILE
@@ -894,12 +908,6 @@ ifdef CONFIG_WPA_CLI_EDIT
 OBJS_c += src/utils/edit.c
 else
 OBJS_c += src/utils/edit_simple.c
-endif
-
-ifdef CONFIG_ACS
-L_CFLAGS += -DCONFIG_ACS
-OBJS += src/ap/acs.c
-LIBS += -lm
 endif
 
 ########################
@@ -925,7 +933,11 @@ LOCAL_STATIC_LIBRARIES += $(BOARD_HOSTAPD_PRIVATE_LIB)
 endif
 LOCAL_SHARED_LIBRARIES := libc libcutils liblog libcrypto libssl
 ifdef CONFIG_DRIVER_NL80211
+ifneq ($(wildcard external/libnl),)
+LOCAL_SHARED_LIBRARIES += libnl
+else
 LOCAL_STATIC_LIBRARIES += libnl_2
+endif
 endif
 LOCAL_CFLAGS := $(L_CFLAGS)
 LOCAL_SRC_FILES := $(OBJS)

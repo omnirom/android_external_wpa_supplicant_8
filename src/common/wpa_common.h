@@ -21,10 +21,12 @@
 #define WPA_GTK_MAX_LEN 32
 
 #define WPA_ALLOWED_PAIRWISE_CIPHERS \
-(WPA_CIPHER_CCMP | WPA_CIPHER_GCMP | WPA_CIPHER_TKIP | WPA_CIPHER_NONE)
+(WPA_CIPHER_CCMP | WPA_CIPHER_GCMP | WPA_CIPHER_TKIP | WPA_CIPHER_NONE | \
+WPA_CIPHER_GCMP_256 | WPA_CIPHER_CCMP_256)
 #define WPA_ALLOWED_GROUP_CIPHERS \
 (WPA_CIPHER_CCMP | WPA_CIPHER_GCMP | WPA_CIPHER_TKIP | WPA_CIPHER_WEP104 | \
-WPA_CIPHER_WEP40)
+WPA_CIPHER_WEP40 | WPA_CIPHER_GCMP_256 | WPA_CIPHER_CCMP_256 | \
+WPA_CIPHER_GTK_NOT_USED)
 
 #define WPA_SELECTOR_LEN 4
 #define WPA_VERSION 1
@@ -60,7 +62,12 @@ WPA_CIPHER_WEP40)
 #define RSN_AUTH_KEY_MGMT_TPK_HANDSHAKE RSN_SELECTOR(0x00, 0x0f, 0xac, 7)
 #define RSN_AUTH_KEY_MGMT_SAE RSN_SELECTOR(0x00, 0x0f, 0xac, 8)
 #define RSN_AUTH_KEY_MGMT_FT_SAE RSN_SELECTOR(0x00, 0x0f, 0xac, 9)
+#define RSN_AUTH_KEY_MGMT_802_1X_SUITE_B RSN_SELECTOR(0x00, 0x0f, 0xac, 11)
+#define RSN_AUTH_KEY_MGMT_802_1X_SUITE_B_384 RSN_SELECTOR(0x00, 0x0f, 0xac, 12)
+#define RSN_AUTH_KEY_MGMT_FT_802_1X_SUITE_B_384 \
+RSN_SELECTOR(0x00, 0x0f, 0xac, 13)
 #define RSN_AUTH_KEY_MGMT_CCKM RSN_SELECTOR(0x00, 0x40, 0x96, 0x00)
+#define RSN_AUTH_KEY_MGMT_OSEN RSN_SELECTOR(0x50, 0x6f, 0x9a, 0x01)
 
 #define RSN_CIPHER_SUITE_NONE RSN_SELECTOR(0x00, 0x0f, 0xac, 0)
 #define RSN_CIPHER_SUITE_WEP40 RSN_SELECTOR(0x00, 0x0f, 0xac, 1)
@@ -70,11 +77,14 @@ WPA_CIPHER_WEP40)
 #endif
 #define RSN_CIPHER_SUITE_CCMP RSN_SELECTOR(0x00, 0x0f, 0xac, 4)
 #define RSN_CIPHER_SUITE_WEP104 RSN_SELECTOR(0x00, 0x0f, 0xac, 5)
-#ifdef CONFIG_IEEE80211W
 #define RSN_CIPHER_SUITE_AES_128_CMAC RSN_SELECTOR(0x00, 0x0f, 0xac, 6)
-#endif /* CONFIG_IEEE80211W */
 #define RSN_CIPHER_SUITE_NO_GROUP_ADDRESSED RSN_SELECTOR(0x00, 0x0f, 0xac, 7)
 #define RSN_CIPHER_SUITE_GCMP RSN_SELECTOR(0x00, 0x0f, 0xac, 8)
+#define RSN_CIPHER_SUITE_GCMP_256 RSN_SELECTOR(0x00, 0x0f, 0xac, 9)
+#define RSN_CIPHER_SUITE_CCMP_256 RSN_SELECTOR(0x00, 0x0f, 0xac, 10)
+#define RSN_CIPHER_SUITE_BIP_GMAC_128 RSN_SELECTOR(0x00, 0x0f, 0xac, 11)
+#define RSN_CIPHER_SUITE_BIP_GMAC_256 RSN_SELECTOR(0x00, 0x0f, 0xac, 12)
+#define RSN_CIPHER_SUITE_BIP_CMAC_256 RSN_SELECTOR(0x00, 0x0f, 0xac, 13)
 
 /* EAPOL-Key Key Data Encapsulation
  * GroupKey and PeerKey require encryption, otherwise, encryption is optional.
@@ -98,6 +108,9 @@ WPA_CIPHER_WEP40)
 #define RSN_KEY_DATA_MULTIBAND_GTK RSN_SELECTOR(0x00, 0x0f, 0xac, 11)
 #define RSN_KEY_DATA_MULTIBAND_KEYID RSN_SELECTOR(0x00, 0x0f, 0xac, 12)
 
+#define WFA_KEY_DATA_IP_ADDR_REQ RSN_SELECTOR(0x50, 0x6f, 0x9a, 4)
+#define WFA_KEY_DATA_IP_ADDR_ALLOC RSN_SELECTOR(0x50, 0x6f, 0x9a, 5)
+
 #define WPA_OUI_TYPE RSN_SELECTOR(0x00, 0x50, 0xf2, 1)
 
 #define RSN_SELECTOR_PUT(a, val) WPA_PUT_BE32((u8 *) (a), (val))
@@ -115,6 +128,7 @@ WPA_CIPHER_WEP40)
 
 #ifdef CONFIG_IEEE80211W
 #define WPA_IGTK_LEN 16
+#define WPA_IGTK_MAX_LEN 32
 #endif /* CONFIG_IEEE80211W */
 
 
@@ -143,6 +157,7 @@ WPA_CIPHER_WEP40)
 
 /* IEEE 802.11, 8.5.2 EAPOL-Key frames */
 #define WPA_KEY_INFO_TYPE_MASK ((u16) (BIT(0) | BIT(1) | BIT(2)))
+#define WPA_KEY_INFO_TYPE_AKM_DEFINED 0
 #define WPA_KEY_INFO_TYPE_HMAC_MD5_RC4 BIT(0)
 #define WPA_KEY_INFO_TYPE_HMAC_SHA1_AES BIT(1)
 #define WPA_KEY_INFO_TYPE_AES_128_CMAC 3
@@ -269,10 +284,11 @@ struct rsn_error_kde {
 } STRUCT_PACKED;
 
 #ifdef CONFIG_IEEE80211W
+#define WPA_IGTK_KDE_PREFIX_LEN (2 + 6)
 struct wpa_igtk_kde {
 	u8 keyid[2];
 	u8 pn[6];
-	u8 igtk[WPA_IGTK_LEN];
+	u8 igtk[WPA_IGTK_MAX_LEN];
 } STRUCT_PACKED;
 #endif /* CONFIG_IEEE80211W */
 
@@ -361,6 +377,7 @@ void rsn_pmkid(const u8 *pmk, size_t pmk_len, const u8 *aa, const u8 *spa,
 
 const char * wpa_cipher_txt(int cipher);
 const char * wpa_key_mgmt_txt(int key_mgmt, int proto);
+u32 wpa_akm_to_suite(int akm);
 int wpa_compare_rsn_ie(int ft_initial_assoc,
 		       const u8 *ie1, size_t ie1len,
 		       const u8 *ie2, size_t ie2len);
@@ -392,8 +409,8 @@ int wpa_ft_parse_ies(const u8 *ies, size_t ies_len, struct wpa_ft_ies *parse);
 int wpa_cipher_key_len(int cipher);
 int wpa_cipher_rsc_len(int cipher);
 int wpa_cipher_to_alg(int cipher);
-enum wpa_cipher wpa_cipher_to_suite_driver(int cipher);
 int wpa_cipher_valid_pairwise(int cipher);
+int wpa_cipher_valid_mgmt_group(int cipher);
 u32 wpa_cipher_to_suite(int proto, int cipher);
 int rsn_cipher_put_suites(u8 *pos, int ciphers);
 int wpa_cipher_put_suites(u8 *pos, int ciphers);

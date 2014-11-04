@@ -28,6 +28,10 @@ struct eap_eke_data {
 	u8 nonce_p[EAP_EKE_MAX_NONCE_LEN];
 	u8 nonce_s[EAP_EKE_MAX_NONCE_LEN];
 	struct wpabuf *msgs;
+	u8 dhgroup; /* forced DH group or 0 to allow all supported */
+	u8 encr; /* forced encryption algorithm or 0 to allow all supported */
+	u8 prf; /* forced PRF or 0 to allow all supported */
+	u8 mac; /* forced MAC or 0 to allow all supported */
 };
 
 
@@ -66,6 +70,7 @@ static void * eap_eke_init(struct eap_sm *sm)
 	struct eap_eke_data *data;
 	const u8 *identity, *password;
 	size_t identity_len, password_len;
+	const char *phase1;
 
 	password = eap_get_config_password(sm, &password_len);
 	if (!password) {
@@ -89,6 +94,39 @@ static void * eap_eke_init(struct eap_sm *sm)
 		data->peerid_len = identity_len;
 	}
 
+	phase1 = eap_get_config_phase1(sm);
+	if (phase1) {
+		const char *pos;
+
+		pos = os_strstr(phase1, "dhgroup=");
+		if (pos) {
+			data->dhgroup = atoi(pos + 8);
+			wpa_printf(MSG_DEBUG, "EAP-EKE: Forced dhgroup %u",
+				   data->dhgroup);
+		}
+
+		pos = os_strstr(phase1, "encr=");
+		if (pos) {
+			data->encr = atoi(pos + 5);
+			wpa_printf(MSG_DEBUG, "EAP-EKE: Forced encr %u",
+				   data->encr);
+		}
+
+		pos = os_strstr(phase1, "prf=");
+		if (pos) {
+			data->prf = atoi(pos + 4);
+			wpa_printf(MSG_DEBUG, "EAP-EKE: Forced prf %u",
+				   data->prf);
+		}
+
+		pos = os_strstr(phase1, "mac=");
+		if (pos) {
+			data->mac = atoi(pos + 4);
+			wpa_printf(MSG_DEBUG, "EAP-EKE: Forced mac %u",
+				   data->mac);
+		}
+	}
+
 	return data;
 }
 
@@ -100,7 +138,7 @@ static void eap_eke_deinit(struct eap_sm *sm, void *priv)
 	os_free(data->serverid);
 	os_free(data->peerid);
 	wpabuf_free(data->msgs);
-	os_free(data);
+	bin_clear_free(data, sizeof(*data));
 }
 
 
@@ -226,16 +264,20 @@ static struct wpabuf * eap_eke_process_id(struct eap_eke_data *data,
 			   i, pos[0], pos[1], pos[2], pos[3]);
 		pos += 4;
 
-		if (!eap_eke_supp_dhgroup(*tmp))
+		if ((data->dhgroup && data->dhgroup != *tmp) ||
+		    !eap_eke_supp_dhgroup(*tmp))
 			continue;
 		tmp++;
-		if (!eap_eke_supp_encr(*tmp))
+		if ((data->encr && data->encr != *tmp) ||
+		    !eap_eke_supp_encr(*tmp))
 			continue;
 		tmp++;
-		if (!eap_eke_supp_prf(*tmp))
+		if ((data->prf && data->prf != *tmp) ||
+		    !eap_eke_supp_prf(*tmp))
 			continue;
 		tmp++;
-		if (!eap_eke_supp_mac(*tmp))
+		if ((data->mac && data->mac != *tmp) ||
+		    !eap_eke_supp_mac(*tmp))
 			continue;
 
 		prop = tmp - 3;
@@ -409,7 +451,7 @@ static struct wpabuf * eap_eke_process_commit(struct eap_sm *sm,
 	/* DHComponent_P = Encr(key, y_p) */
 	rpos = wpabuf_put(resp, data->sess.dhcomp_len);
 	if (eap_eke_dhcomp(&data->sess, key, pub, rpos) < 0) {
-		wpa_printf(MSG_INFO, "EAP-EKE: Failed to build DHComponent_S");
+		wpa_printf(MSG_INFO, "EAP-EKE: Failed to build DHComponent_P");
 		os_memset(key, 0, sizeof(key));
 		return eap_eke_build_fail(data, ret, reqData,
 					  EAP_EKE_FAIL_PRIVATE_INTERNAL_ERROR);
@@ -481,7 +523,7 @@ static struct wpabuf * eap_eke_process_confirm(struct eap_eke_data *data,
 	end = payload + payload_len;
 
 	if (pos + data->sess.pnonce_ps_len + data->sess.prf_len > end) {
-		wpa_printf(MSG_DEBUG, "EAP-EKE: Too short EAP-EKE-Commit");
+		wpa_printf(MSG_DEBUG, "EAP-EKE: Too short EAP-EKE-Confirm");
 		return eap_eke_build_fail(data, ret, reqData,
 					  EAP_EKE_FAIL_PROTO_ERROR);
 	}
@@ -501,7 +543,7 @@ static struct wpabuf * eap_eke_process_confirm(struct eap_eke_data *data,
 	wpa_hexdump_key(MSG_DEBUG, "EAP-EKE: Received Nonce_P | Nonce_S",
 			nonces, 2 * data->sess.nonce_len);
 	if (os_memcmp(data->nonce_p, nonces, data->sess.nonce_len) != 0) {
-		wpa_printf(MSG_INFO, "EAP-EKE: Received Nonce_P does not match trnsmitted Nonce_P");
+		wpa_printf(MSG_INFO, "EAP-EKE: Received Nonce_P does not match transmitted Nonce_P");
 		return eap_eke_build_fail(data, ret, reqData,
 					  EAP_EKE_FAIL_AUTHENTICATION_FAIL);
 	}
@@ -524,8 +566,8 @@ static struct wpabuf * eap_eke_process_confirm(struct eap_eke_data *data,
 					  EAP_EKE_FAIL_PRIVATE_INTERNAL_ERROR);
 	}
 	wpa_hexdump(MSG_DEBUG, "EAP-EKE: Auth_S", auth_s, data->sess.prf_len);
-	if (os_memcmp(auth_s, pos + data->sess.pnonce_ps_len,
-		      data->sess.prf_len) != 0) {
+	if (os_memcmp_const(auth_s, pos + data->sess.pnonce_ps_len,
+			    data->sess.prf_len) != 0) {
 		wpa_printf(MSG_INFO, "EAP-EKE: Auth_S does not match");
 		return eap_eke_build_fail(data, ret, reqData,
 					  EAP_EKE_FAIL_AUTHENTICATION_FAIL);

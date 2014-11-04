@@ -108,10 +108,15 @@ static int ieee802_11_parse_vendor_specific(const u8 *pos, size_t elen,
 			elems->hs20 = pos;
 			elems->hs20_len = elen;
 			break;
+		case HS20_OSEN_OUI_TYPE:
+			/* Hotspot 2.0 OSEN */
+			elems->osen = pos;
+			elems->osen_len = elen;
+			break;
 		default:
 			wpa_printf(MSG_MSGDUMP, "Unknown WFA "
 				   "information element ignored "
-				   "(type=%d len=%lu)\n",
+				   "(type=%d len=%lu)",
 				   pos[3], (unsigned long) elen);
 			return -1;
 		}
@@ -189,25 +194,12 @@ ParseRes ieee802_11_parse_elems(const u8 *start, size_t len,
 			elems->supp_rates = pos;
 			elems->supp_rates_len = elen;
 			break;
-		case WLAN_EID_FH_PARAMS:
-			elems->fh_params = pos;
-			elems->fh_params_len = elen;
-			break;
 		case WLAN_EID_DS_PARAMS:
 			elems->ds_params = pos;
 			elems->ds_params_len = elen;
 			break;
 		case WLAN_EID_CF_PARAMS:
-			elems->cf_params = pos;
-			elems->cf_params_len = elen;
-			break;
 		case WLAN_EID_TIM:
-			elems->tim = pos;
-			elems->tim_len = elen;
-			break;
-		case WLAN_EID_IBSS_PARAMS:
-			elems->ibss_params = pos;
-			elems->ibss_params_len = elen;
 			break;
 		case WLAN_EID_CHALLENGE:
 			elems->challenge = pos;
@@ -232,8 +224,6 @@ ParseRes ieee802_11_parse_elems(const u8 *start, size_t len,
 			elems->rsn_ie_len = elen;
 			break;
 		case WLAN_EID_PWR_CAPABILITY:
-			elems->power_cap = pos;
-			elems->power_cap_len = elen;
 			break;
 		case WLAN_EID_SUPPORTED_CHANNELS:
 			elems->supp_channels = pos;
@@ -267,6 +257,11 @@ ParseRes ieee802_11_parse_elems(const u8 *start, size_t len,
 			elems->vht_operation = pos;
 			elems->vht_operation_len = elen;
 			break;
+		case WLAN_EID_VHT_OPERATING_MODE_NOTIFICATION:
+			if (elen != 1)
+				break;
+			elems->vht_opmode_notif = pos;
+			break;
 		case WLAN_EID_LINK_ID:
 			if (elen < 18)
 				break;
@@ -275,6 +270,12 @@ ParseRes ieee802_11_parse_elems(const u8 *start, size_t len,
 		case WLAN_EID_INTERWORKING:
 			elems->interworking = pos;
 			elems->interworking_len = elen;
+			break;
+		case WLAN_EID_QOS_MAP_SET:
+			if (elen < 16)
+				break;
+			elems->qos_map_set = pos;
+			elems->qos_map_set_len = elen;
 			break;
 		case WLAN_EID_EXT_CAPAB:
 			elems->ext_capab = pos;
@@ -544,4 +545,61 @@ int supp_rates_11b_only(struct ieee802_11_elems *elems)
 	}
 
 	return num_11b > 0 && num_others == 0;
+}
+
+
+const char * fc2str(u16 fc)
+{
+	u16 stype = WLAN_FC_GET_STYPE(fc);
+#define C2S(x) case x: return #x;
+
+	switch (WLAN_FC_GET_TYPE(fc)) {
+	case WLAN_FC_TYPE_MGMT:
+		switch (stype) {
+		C2S(WLAN_FC_STYPE_ASSOC_REQ)
+		C2S(WLAN_FC_STYPE_ASSOC_RESP)
+		C2S(WLAN_FC_STYPE_REASSOC_REQ)
+		C2S(WLAN_FC_STYPE_REASSOC_RESP)
+		C2S(WLAN_FC_STYPE_PROBE_REQ)
+		C2S(WLAN_FC_STYPE_PROBE_RESP)
+		C2S(WLAN_FC_STYPE_BEACON)
+		C2S(WLAN_FC_STYPE_ATIM)
+		C2S(WLAN_FC_STYPE_DISASSOC)
+		C2S(WLAN_FC_STYPE_AUTH)
+		C2S(WLAN_FC_STYPE_DEAUTH)
+		C2S(WLAN_FC_STYPE_ACTION)
+		}
+		break;
+	case WLAN_FC_TYPE_CTRL:
+		switch (stype) {
+		C2S(WLAN_FC_STYPE_PSPOLL)
+		C2S(WLAN_FC_STYPE_RTS)
+		C2S(WLAN_FC_STYPE_CTS)
+		C2S(WLAN_FC_STYPE_ACK)
+		C2S(WLAN_FC_STYPE_CFEND)
+		C2S(WLAN_FC_STYPE_CFENDACK)
+		}
+		break;
+	case WLAN_FC_TYPE_DATA:
+		switch (stype) {
+		C2S(WLAN_FC_STYPE_DATA)
+		C2S(WLAN_FC_STYPE_DATA_CFACK)
+		C2S(WLAN_FC_STYPE_DATA_CFPOLL)
+		C2S(WLAN_FC_STYPE_DATA_CFACKPOLL)
+		C2S(WLAN_FC_STYPE_NULLFUNC)
+		C2S(WLAN_FC_STYPE_CFACK)
+		C2S(WLAN_FC_STYPE_CFPOLL)
+		C2S(WLAN_FC_STYPE_CFACKPOLL)
+		C2S(WLAN_FC_STYPE_QOS_DATA)
+		C2S(WLAN_FC_STYPE_QOS_DATA_CFACK)
+		C2S(WLAN_FC_STYPE_QOS_DATA_CFPOLL)
+		C2S(WLAN_FC_STYPE_QOS_DATA_CFACKPOLL)
+		C2S(WLAN_FC_STYPE_QOS_NULL)
+		C2S(WLAN_FC_STYPE_QOS_CFPOLL)
+		C2S(WLAN_FC_STYPE_QOS_CFACKPOLL)
+		}
+		break;
+	}
+	return "WLAN_FC_TYPE_UNKNOWN";
+#undef C2S
 }

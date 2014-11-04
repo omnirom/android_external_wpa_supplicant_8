@@ -106,8 +106,10 @@ static int eap_wsc_new_ap_settings(struct wps_credential *cred,
 	}
 	if (os_strncmp(pos + 9, "NONE", 4) == 0)
 		cred->encr_type = WPS_ENCR_NONE;
+#ifdef CONFIG_TESTING_OPTIONS
 	else if (os_strncmp(pos + 9, "WEP", 3) == 0)
 		cred->encr_type = WPS_ENCR_WEP;
+#endif /* CONFIG_TESTING_OPTIONS */
 	else if (os_strncmp(pos + 9, "TKIP", 4) == 0)
 		cred->encr_type = WPS_ENCR_TKIP;
 	else if (os_strncmp(pos + 9, "CCMP", 4) == 0)
@@ -144,12 +146,13 @@ static void * eap_wsc_init(struct eap_sm *sm)
 	size_t identity_len;
 	int registrar;
 	struct wps_config cfg;
-	const char *pos;
+	const char *pos, *end;
 	const char *phase1;
 	struct wps_context *wps;
 	struct wps_credential new_ap_settings;
 	int res;
 	int nfc = 0;
+	u8 pkhash[WPS_OOB_PUBKEY_HASH_LEN];
 
 	wps = sm->wps;
 	if (wps == NULL) {
@@ -209,6 +212,15 @@ static void * eap_wsc_init(struct eap_sm *sm)
 			cfg.pbc = 1;
 	}
 
+	pos = os_strstr(phase1, "dev_pw_id=");
+	if (pos) {
+		u16 id = atoi(pos + 10);
+		if (id == DEV_PW_NFC_CONNECTION_HANDOVER)
+			nfc = 1;
+		if (cfg.pin || id == DEV_PW_NFC_CONNECTION_HANDOVER)
+			cfg.dev_pw_id = id;
+	}
+
 	if (cfg.pin == NULL && !cfg.pbc && !nfc) {
 		wpa_printf(MSG_INFO, "EAP-WSC: PIN or PBC not set in phase1 "
 			   "configuration data");
@@ -216,9 +228,23 @@ static void * eap_wsc_init(struct eap_sm *sm)
 		return NULL;
 	}
 
-	pos = os_strstr(phase1, "dev_pw_id=");
-	if (pos && cfg.pin)
-		cfg.dev_pw_id = atoi(pos + 10);
+	pos = os_strstr(phase1, " pkhash=");
+	if (pos) {
+		size_t len;
+		pos += 8;
+		end = os_strchr(pos, ' ');
+		if (end)
+			len = end - pos;
+		else
+			len = os_strlen(pos);
+		if (len != 2 * WPS_OOB_PUBKEY_HASH_LEN ||
+		    hexstr2bin(pos, pkhash, WPS_OOB_PUBKEY_HASH_LEN)) {
+			wpa_printf(MSG_INFO, "EAP-WSC: Invalid pkhash");
+			os_free(data);
+			return NULL;
+		}
+		cfg.peer_pubkey_hash = pkhash;
+	}
 
 	res = eap_wsc_new_ap_settings(&new_ap_settings, phase1);
 	if (res < 0) {

@@ -14,11 +14,6 @@ struct peer_handler_args {
 	u8 p2p_device_addr[ETH_ALEN];
 };
 
-struct groupmember_handler_args {
-	struct wpa_supplicant *wpa_s;
-	u8 member_addr[ETH_ALEN];
-};
-
 /*
  * P2P Device methods
  */
@@ -146,6 +141,14 @@ dbus_bool_t wpas_dbus_getter_p2p_peer_vendor_extension(DBusMessageIter *iter,
 dbus_bool_t wpas_dbus_getter_p2p_peer_ies(DBusMessageIter *iter,
 					  DBusError *error,
 					  void *user_data);
+
+dbus_bool_t wpas_dbus_getter_p2p_peer_device_address(DBusMessageIter *iter,
+						     DBusError *error,
+						     void *user_data);
+
+dbus_bool_t wpas_dbus_getter_p2p_peer_groups(DBusMessageIter *iter,
+					     DBusError *error,
+					     void *user_data);
 
 /*
  * P2P Group properties

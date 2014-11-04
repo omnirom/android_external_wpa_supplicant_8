@@ -137,6 +137,9 @@ struct eapol_sm {
 	Boolean cached_pmk;
 
 	Boolean unicast_key_received, broadcast_key_received;
+
+	Boolean force_authorized_update;
+
 #ifdef CONFIG_EAP_PROXY
 	Boolean use_eap_proxy;
 	struct eap_proxy_sm *eap_proxy;
@@ -210,7 +213,6 @@ SM_STATE(SUPP_PAE, LOGOFF)
 	SM_ENTRY(SUPP_PAE, LOGOFF);
 	eapol_sm_txLogoff(sm);
 	sm->logoffSent = TRUE;
-	sm->suppPortStatus = Unauthorized;
 	eapol_sm_set_port_unauthorized(sm);
 }
 
@@ -221,7 +223,6 @@ SM_STATE(SUPP_PAE, DISCONNECTED)
 	sm->sPortMode = Auto;
 	sm->startCount = 0;
 	sm->logoffSent = FALSE;
-	sm->suppPortStatus = Unauthorized;
 	eapol_sm_set_port_unauthorized(sm);
 	sm->suppAbort = TRUE;
 
@@ -286,7 +287,6 @@ SM_STATE(SUPP_PAE, HELD)
 	SM_ENTRY(SUPP_PAE, HELD);
 	sm->heldWhile = sm->heldPeriod;
 	eapol_enable_timer_tick(sm);
-	sm->suppPortStatus = Unauthorized;
 	eapol_sm_set_port_unauthorized(sm);
 	sm->cb_status = EAPOL_CB_FAILURE;
 }
@@ -295,7 +295,6 @@ SM_STATE(SUPP_PAE, HELD)
 SM_STATE(SUPP_PAE, AUTHENTICATED)
 {
 	SM_ENTRY(SUPP_PAE, AUTHENTICATED);
-	sm->suppPortStatus = Authorized;
 	eapol_sm_set_port_authorized(sm);
 	sm->cb_status = EAPOL_CB_SUCCESS;
 }
@@ -311,7 +310,6 @@ SM_STATE(SUPP_PAE, RESTART)
 SM_STATE(SUPP_PAE, S_FORCE_AUTH)
 {
 	SM_ENTRY(SUPP_PAE, S_FORCE_AUTH);
-	sm->suppPortStatus = Authorized;
 	eapol_sm_set_port_authorized(sm);
 	sm->sPortMode = ForceAuthorized;
 }
@@ -320,7 +318,6 @@ SM_STATE(SUPP_PAE, S_FORCE_AUTH)
 SM_STATE(SUPP_PAE, S_FORCE_UNAUTH)
 {
 	SM_ENTRY(SUPP_PAE, S_FORCE_UNAUTH);
-	sm->suppPortStatus = Unauthorized;
 	eapol_sm_set_port_unauthorized(sm);
 	sm->sPortMode = ForceUnauthorized;
 	eapol_sm_txLogoff(sm);
@@ -722,8 +719,8 @@ static void eapol_sm_processKey(struct eapol_sm *sm)
 	hmac_md5(keydata.sign_key, sign_key_len,
 		 sm->last_rx_key, sizeof(*hdr) + be_to_host16(hdr->length),
 		 key->key_signature);
-	if (os_memcmp(orig_key_sign, key->key_signature,
-		      IEEE8021X_KEY_SIGN_LEN) != 0) {
+	if (os_memcmp_const(orig_key_sign, key->key_signature,
+			    IEEE8021X_KEY_SIGN_LEN) != 0) {
 		wpa_printf(MSG_DEBUG, "EAPOL: Invalid key signature in "
 			   "EAPOL-Key packet");
 		os_memcpy(key->key_signature, orig_key_sign,
@@ -879,14 +876,24 @@ static void eapol_sm_step_timeout(void *eloop_ctx, void *timeout_ctx)
 
 static void eapol_sm_set_port_authorized(struct eapol_sm *sm)
 {
-	if (sm->ctx->port_cb)
+	int cb;
+
+	cb = sm->suppPortStatus != Authorized || sm->force_authorized_update;
+	sm->force_authorized_update = FALSE;
+	sm->suppPortStatus = Authorized;
+	if (cb && sm->ctx->port_cb)
 		sm->ctx->port_cb(sm->ctx->ctx, 1);
 }
 
 
 static void eapol_sm_set_port_unauthorized(struct eapol_sm *sm)
 {
-	if (sm->ctx->port_cb)
+	int cb;
+
+	cb = sm->suppPortStatus != Unauthorized || sm->force_authorized_update;
+	sm->force_authorized_update = FALSE;
+	sm->suppPortStatus = Unauthorized;
+	if (cb && sm->ctx->port_cb)
 		sm->ctx->port_cb(sm->ctx->ctx, 0);
 }
 
@@ -933,9 +940,15 @@ void eapol_sm_step(struct eapol_sm *sm)
 	}
 
 	if (sm->ctx->cb && sm->cb_status != EAPOL_CB_IN_PROGRESS) {
-		int success = sm->cb_status == EAPOL_CB_SUCCESS ? 1 : 0;
+		enum eapol_supp_result result;
+		if (sm->cb_status == EAPOL_CB_SUCCESS)
+			result = EAPOL_SUPP_RESULT_SUCCESS;
+		else if (eap_peer_was_failure_expected(sm->eap))
+			result = EAPOL_SUPP_RESULT_EXPECTED_FAILURE;
+		else
+			result = EAPOL_SUPP_RESULT_FAILURE;
 		sm->cb_status = EAPOL_CB_IN_PROGRESS;
-		sm->ctx->cb(sm, success, sm->ctx->cb_ctx);
+		sm->ctx->cb(sm, result, sm->ctx->cb_ctx);
 	}
 }
 
@@ -1257,6 +1270,24 @@ int eapol_sm_rx_eapol(struct eapol_sm *sm, const u8 *src, const u8 *buf,
 
 	switch (hdr->type) {
 	case IEEE802_1X_TYPE_EAP_PACKET:
+		if (sm->conf.workaround) {
+			/*
+			 * An AP has been reported to send out EAP message with
+			 * undocumented code 10 at some point near the
+			 * completion of EAP authentication. This can result in
+			 * issues with the unexpected EAP message triggering
+			 * restart of EAPOL authentication. Avoid this by
+			 * skipping the message without advancing the state
+			 * machine.
+			 */
+			const struct eap_hdr *ehdr =
+				(const struct eap_hdr *) (hdr + 1);
+			if (plen >= sizeof(*ehdr) && ehdr->code == 10) {
+				wpa_printf(MSG_DEBUG, "EAPOL: Ignore EAP packet with unknown code 10");
+				break;
+			}
+		}
+
 		if (sm->cached_pmk) {
 			/* Trying to use PMKSA caching, but Authenticator did
 			 * not seem to have a matching entry. Need to restart
@@ -1314,6 +1345,13 @@ int eapol_sm_rx_eapol(struct eapol_sm *sm, const u8 *src, const u8 *buf,
 			eapol_sm_step(sm);
 		}
 		break;
+#ifdef CONFIG_MACSEC
+	case IEEE802_1X_TYPE_EAPOL_MKA:
+		wpa_printf(MSG_EXCESSIVE,
+			   "EAPOL type %d will be handled by MKA",
+			   hdr->type);
+		break;
+#endif /* CONFIG_MACSEC */
 	default:
 		wpa_printf(MSG_DEBUG, "EAPOL: Received unknown EAPOL type %d",
 			   hdr->type);
@@ -1352,6 +1390,8 @@ void eapol_sm_notify_portEnabled(struct eapol_sm *sm, Boolean enabled)
 		return;
 	wpa_printf(MSG_DEBUG, "EAPOL: External notification - "
 		   "portEnabled=%d", enabled);
+	if (sm->portEnabled != enabled)
+		sm->force_authorized_update = TRUE;
 	sm->portEnabled = enabled;
 	eapol_sm_step(sm);
 }
@@ -1461,6 +1501,7 @@ void eapol_sm_notify_config(struct eapol_sm *sm,
 		eap_set_fast_reauth(sm->eap, conf->fast_reauth);
 		eap_set_workaround(sm->eap, conf->workaround);
 		eap_set_force_disabled(sm->eap, conf->eap_disabled);
+		eap_set_external_sim(sm->eap, conf->external_sim);
 	}
 }
 
@@ -1482,7 +1523,7 @@ int eapol_sm_get_key(struct eapol_sm *sm, u8 *key, size_t len)
 	size_t eap_len;
 
 #ifdef CONFIG_EAP_PROXY
-	if (sm->use_eap_proxy) {
+	if (sm && sm->use_eap_proxy) {
 		/* Get key from EAP proxy */
 		if (sm == NULL || !eap_proxy_key_available(sm->eap_proxy)) {
 			wpa_printf(MSG_DEBUG, "EAPOL: EAP key not available");
@@ -1519,6 +1560,24 @@ key_fetched:
 	wpa_printf(MSG_DEBUG, "EAPOL: Successfully fetched key (len=%lu)",
 		   (unsigned long) len);
 	return 0;
+}
+
+
+/**
+ * eapol_sm_get_session_id - Get EAP Session-Id
+ * @sm: Pointer to EAPOL state machine allocated with eapol_sm_init()
+ * @len: Pointer to variable that will be set to number of bytes in the session
+ * Returns: Pointer to the EAP Session-Id or %NULL on failure
+ *
+ * The Session-Id is available only after a successful authentication.
+ */
+const u8 * eapol_sm_get_session_id(struct eapol_sm *sm, size_t *len)
+{
+	if (sm == NULL || !eap_key_available(sm->eap)) {
+		wpa_printf(MSG_DEBUG, "EAPOL: EAP Session-Id not available");
+		return NULL;
+	}
+	return eap_get_eapSessionId(sm->eap, len);
 }
 
 
@@ -1589,7 +1648,6 @@ static void eapol_sm_abort_cached(struct eapol_sm *sm)
 		return;
 	sm->cached_pmk = FALSE;
 	sm->SUPP_PAE_state = SUPP_PAE_CONNECTING;
-	sm->suppPortStatus = Unauthorized;
 	eapol_sm_set_port_unauthorized(sm);
 
 	/* Make sure we do not start sending EAPOL-Start frames first, but
@@ -1983,6 +2041,7 @@ struct eapol_sm *eapol_sm_init(struct eapol_ctx *ctx)
 #endif /* CONFIG_EAP_PROXY */
 
 	/* Initialize EAPOL state machines */
+	sm->force_authorized_update = TRUE;
 	sm->initialize = TRUE;
 	eapol_sm_step(sm);
 	sm->initialize = FALSE;
@@ -2031,4 +2090,16 @@ int eapol_sm_failed(struct eapol_sm *sm)
 	if (sm == NULL)
 		return 0;
 	return !sm->eapSuccess && sm->eapFail;
+}
+
+
+int eapol_sm_get_eap_proxy_imsi(struct eapol_sm *sm, char *imsi, size_t *len)
+{
+#ifdef CONFIG_EAP_PROXY
+	if (sm->eap_proxy == NULL)
+		return -1;
+	return eap_proxy_get_imsi(sm->eap_proxy, imsi, len);
+#else /* CONFIG_EAP_PROXY */
+	return -1;
+#endif /* CONFIG_EAP_PROXY */
 }

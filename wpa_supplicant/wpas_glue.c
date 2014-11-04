@@ -26,6 +26,7 @@
 #include "bss.h"
 #include "scan.h"
 #include "notify.h"
+#include "wpas_kay.h"
 
 
 #ifndef CONFIG_NO_CONFIG_BLOBS
@@ -216,29 +217,50 @@ static void wpa_supplicant_aborted_cached(void *ctx)
 }
 
 
-static void wpa_supplicant_eapol_cb(struct eapol_sm *eapol, int success,
+static const char * result_str(enum eapol_supp_result result)
+{
+	switch (result) {
+	case EAPOL_SUPP_RESULT_FAILURE:
+		return "FAILURE";
+	case EAPOL_SUPP_RESULT_SUCCESS:
+		return "SUCCESS";
+	case EAPOL_SUPP_RESULT_EXPECTED_FAILURE:
+		return "EXPECTED_FAILURE";
+	}
+	return "?";
+}
+
+
+static void wpa_supplicant_eapol_cb(struct eapol_sm *eapol,
+				    enum eapol_supp_result result,
 				    void *ctx)
 {
 	struct wpa_supplicant *wpa_s = ctx;
 	int res, pmk_len;
 	u8 pmk[PMK_LEN];
 
-	wpa_printf(MSG_DEBUG, "EAPOL authentication completed %ssuccessfully",
-		   success ? "" : "un");
+	wpa_printf(MSG_DEBUG, "EAPOL authentication completed - result=%s",
+		   result_str(result));
 
 	if (wpas_wps_eapol_cb(wpa_s) > 0)
 		return;
 
-	if (!success) {
+	wpa_s->eap_expected_failure = result ==
+		EAPOL_SUPP_RESULT_EXPECTED_FAILURE;
+
+	if (result != EAPOL_SUPP_RESULT_SUCCESS) {
 		/*
 		 * Make sure we do not get stuck here waiting for long EAPOL
 		 * timeout if the AP does not disconnect in case of
 		 * authentication failure.
 		 */
 		wpa_supplicant_req_auth_timeout(wpa_s, 2, 0);
+	} else {
+		ieee802_1x_notify_create_actor(wpa_s, wpa_s->last_eapol_src);
 	}
 
-	if (!success || !(wpa_s->drv_flags & WPA_DRIVER_FLAGS_4WAY_HANDSHAKE))
+	if (result != EAPOL_SUPP_RESULT_SUCCESS ||
+	    !(wpa_s->drv_flags & WPA_DRIVER_FLAGS_4WAY_HANDSHAKE))
 		return;
 
 	if (!wpa_key_mgmt_wpa_ieee8021x(wpa_s->key_mgmt))
@@ -539,12 +561,12 @@ static int wpa_supplicant_tdls_get_capa(void *ctx, int *tdls_supported,
 
 static int wpa_supplicant_send_tdls_mgmt(void *ctx, const u8 *dst,
 					 u8 action_code, u8 dialog_token,
-					 u16 status_code, const u8 *buf,
-					 size_t len)
+					 u16 status_code, u32 peer_capab,
+					 const u8 *buf, size_t len)
 {
 	struct wpa_supplicant *wpa_s = ctx;
 	return wpa_drv_send_tdls_mgmt(wpa_s, dst, action_code, dialog_token,
-				      status_code, buf, len);
+				      status_code, peer_capab, buf, len);
 }
 
 
@@ -560,7 +582,9 @@ static int wpa_supplicant_tdls_peer_addset(
 	const u8 *supp_rates, size_t supp_rates_len,
 	const struct ieee80211_ht_capabilities *ht_capab,
 	const struct ieee80211_vht_capabilities *vht_capab,
-	u8 qosinfo, const u8 *ext_capab, size_t ext_capab_len)
+	u8 qosinfo, const u8 *ext_capab, size_t ext_capab_len,
+	const u8 *supp_channels, size_t supp_channels_len,
+	const u8 *supp_oper_classes, size_t supp_oper_classes_len)
 {
 	struct wpa_supplicant *wpa_s = ctx;
 	struct hostapd_sta_add_params params;
@@ -588,6 +612,10 @@ static int wpa_supplicant_tdls_peer_addset(
 	params.set = !add;
 	params.ext_capab = ext_capab;
 	params.ext_capab_len = ext_capab_len;
+	params.supp_channels = supp_channels;
+	params.supp_channels_len = supp_channels_len;
+	params.supp_oper_classes = supp_oper_classes;
+	params.supp_oper_classes_len = supp_oper_classes_len;
 
 	return wpa_drv_sta_add(wpa_s, &params);
 }
@@ -611,6 +639,8 @@ enum wpa_ctrl_req_type wpa_supplicant_ctrl_req_from_string(const char *field)
 		return WPA_CTRL_REQ_EAP_OTP;
 	else if (os_strcmp(field, "PASSPHRASE") == 0)
 		return WPA_CTRL_REQ_EAP_PASSPHRASE;
+	else if (os_strcmp(field, "SIM") == 0)
+		return WPA_CTRL_REQ_SIM;
 	return WPA_CTRL_REQ_UNKNOWN;
 }
 
@@ -646,6 +676,9 @@ const char * wpa_supplicant_ctrl_req_to_string(enum wpa_ctrl_req_type field,
 	case WPA_CTRL_REQ_EAP_PASSPHRASE:
 		*txt = "Private key passphrase";
 		ret = "PASSPHRASE";
+		break;
+	case WPA_CTRL_REQ_SIM:
+		ret = "SIM";
 		break;
 	default:
 		break;
@@ -918,6 +951,22 @@ void wpa_supplicant_rsn_supp_set_config(struct wpa_supplicant *wpa_s,
 		conf.ssid = ssid->ssid;
 		conf.ssid_len = ssid->ssid_len;
 		conf.wpa_ptk_rekey = ssid->wpa_ptk_rekey;
+#ifdef CONFIG_P2P
+		if (ssid->p2p_group && wpa_s->current_bss &&
+		    !wpa_s->p2p_disable_ip_addr_req) {
+			struct wpabuf *p2p;
+			p2p = wpa_bss_get_vendor_ie_multi(wpa_s->current_bss,
+							  P2P_IE_VENDOR_TYPE);
+			if (p2p) {
+				u8 group_capab;
+				group_capab = p2p_get_group_capab(p2p);
+				if (group_capab &
+				    P2P_GROUP_CAPAB_IP_ADDR_ALLOCATION)
+					conf.p2p = 1;
+				wpabuf_free(p2p);
+			}
+		}
+#endif /* CONFIG_P2P */
 	}
 	wpa_sm_set_config(wpa_s->wpa, ssid ? &conf : NULL);
 }

@@ -15,6 +15,7 @@
 #include "common/ieee802_11_defs.h"
 #include "common/wpa_ctrl.h"
 #include "eapol_supp/eapol_supp_sm.h"
+#include "crypto/dh_group5.h"
 #include "ap/hostapd.h"
 #include "ap/ap_config.h"
 #include "ap/ap_drv_ops.h"
@@ -42,11 +43,43 @@ static void wpas_wps_ap_pin_timeout(void *eloop_data, void *user_ctx);
 #endif /* CONFIG_WPS */
 
 
+#ifdef CONFIG_IEEE80211N
+static void wpas_conf_ap_vht(struct wpa_supplicant *wpa_s,
+			     struct hostapd_config *conf,
+			     struct hostapd_hw_modes *mode)
+{
+#ifdef CONFIG_P2P
+	u8 center_chan = 0;
+	u8 channel = conf->channel;
+
+	if (!conf->secondary_channel)
+		goto no_vht;
+
+	center_chan = wpas_p2p_get_vht80_center(wpa_s, mode, channel);
+	if (!center_chan)
+		goto no_vht;
+
+	/* Use 80 MHz channel */
+	conf->vht_oper_chwidth = 1;
+	conf->vht_oper_centr_freq_seg0_idx = center_chan;
+	return;
+
+no_vht:
+	conf->vht_oper_centr_freq_seg0_idx =
+		channel + conf->secondary_channel * 2;
+#else /* CONFIG_P2P */
+	conf->vht_oper_centr_freq_seg0_idx =
+		conf->channel + conf->secondary_channel * 2;
+#endif /* CONFIG_P2P */
+}
+#endif /* CONFIG_IEEE80211N */
+
+
 static int wpa_supplicant_conf_ap(struct wpa_supplicant *wpa_s,
 				  struct wpa_ssid *ssid,
 				  struct hostapd_config *conf)
 {
-	struct hostapd_bss_config *bss = &conf->bss[0];
+	struct hostapd_bss_config *bss = conf->bss[0];
 
 	conf->driver = wpa_s->driver;
 
@@ -114,6 +147,11 @@ static int wpa_supplicant_conf_ap(struct wpa_supplicant *wpa_s,
 				 HT_CAP_INFO_SHORT_GI40MHZ |
 				 HT_CAP_INFO_RX_STBC_MASK |
 				 HT_CAP_INFO_MAX_AMSDU_SIZE);
+
+			if (mode->vht_capab && ssid->vht) {
+				conf->ieee80211ac = 1;
+				wpas_conf_ap_vht(wpa_s, conf, mode);
+			}
 		}
 	}
 #endif /* CONFIG_IEEE80211N */
@@ -149,6 +187,16 @@ static int wpa_supplicant_conf_ap(struct wpa_supplicant *wpa_s,
 
 	bss->isolate = !wpa_s->conf->p2p_intra_bss;
 	bss->force_per_enrollee_psk = wpa_s->global->p2p_per_sta_psk;
+
+	if (ssid->p2p_group) {
+		os_memcpy(bss->ip_addr_go, wpa_s->parent->conf->ip_addr_go, 4);
+		os_memcpy(bss->ip_addr_mask, wpa_s->parent->conf->ip_addr_mask,
+			  4);
+		os_memcpy(bss->ip_addr_start,
+			  wpa_s->parent->conf->ip_addr_start, 4);
+		os_memcpy(bss->ip_addr_end, wpa_s->parent->conf->ip_addr_end,
+			  4);
+	}
 #endif /* CONFIG_P2P */
 
 	if (ssid->ssid_len == 0) {
@@ -244,13 +292,20 @@ static int wpa_supplicant_conf_ap(struct wpa_supplicant *wpa_s,
 
 	if (bss->wpa_group_rekey < 86400 && (bss->wpa & 2) &&
 	    (bss->wpa_group == WPA_CIPHER_CCMP ||
-	     bss->wpa_group == WPA_CIPHER_GCMP)) {
+	     bss->wpa_group == WPA_CIPHER_GCMP ||
+	     bss->wpa_group == WPA_CIPHER_CCMP_256 ||
+	     bss->wpa_group == WPA_CIPHER_GCMP_256)) {
 		/*
 		 * Strong ciphers do not need frequent rekeying, so increase
 		 * the default GTK rekeying period to 24 hours.
 		 */
 		bss->wpa_group_rekey = 86400;
 	}
+
+#ifdef CONFIG_IEEE80211W
+	if (ssid->ieee80211w != MGMT_FRAME_PROTECTION_DEFAULT)
+		bss->ieee80211w = ssid->ieee80211w;
+#endif /* CONFIG_IEEE80211W */
 
 #ifdef CONFIG_WPS
 	/*
@@ -261,12 +316,10 @@ static int wpa_supplicant_conf_ap(struct wpa_supplicant *wpa_s,
 	if (bss->ssid.security_policy != SECURITY_WPA_PSK &&
 	    bss->ssid.security_policy != SECURITY_PLAINTEXT)
 		goto no_wps;
-#ifdef CONFIG_WPS2
 	if (bss->ssid.security_policy == SECURITY_WPA_PSK &&
 	    (!(bss->rsn_pairwise & WPA_CIPHER_CCMP) || !(bss->wpa & 2)))
 		goto no_wps; /* WPS2 does not allow WPA/TKIP-only
 			      * configuration */
-#endif /* CONFIG_WPS2 */
 	bss->eap_server = 1;
 
 	if (!ssid->ignore_broadcast_ssid)
@@ -320,16 +373,16 @@ static void ap_public_action_rx(void *ctx, const u8 *buf, size_t len, int freq)
 #ifdef CONFIG_P2P
 	struct wpa_supplicant *wpa_s = ctx;
 	const struct ieee80211_mgmt *mgmt;
-	size_t hdr_len;
 
 	mgmt = (const struct ieee80211_mgmt *) buf;
-	hdr_len = (const u8 *) &mgmt->u.action.u.vs_public_action.action - buf;
-	if (hdr_len > len)
+	if (len < IEEE80211_HDRLEN + 1)
+		return;
+	if (mgmt->u.action.category != WLAN_ACTION_PUBLIC)
 		return;
 	wpas_p2p_rx_action(wpa_s, mgmt->da, mgmt->sa, mgmt->bssid,
 			   mgmt->u.action.category,
-			   &mgmt->u.action.u.vs_public_action.action,
-			   len - hdr_len, freq);
+			   buf + IEEE80211_HDRLEN + 1,
+			   len - IEEE80211_HDRLEN - 1, freq);
 #endif /* CONFIG_P2P */
 }
 
@@ -385,16 +438,14 @@ static int ap_vendor_action_rx(void *ctx, const u8 *buf, size_t len, int freq)
 #ifdef CONFIG_P2P
 	struct wpa_supplicant *wpa_s = ctx;
 	const struct ieee80211_mgmt *mgmt;
-	size_t hdr_len;
 
 	mgmt = (const struct ieee80211_mgmt *) buf;
-	hdr_len = (const u8 *) &mgmt->u.action.u.vs_public_action.action - buf;
-	if (hdr_len > len)
+	if (len < IEEE80211_HDRLEN + 1)
 		return -1;
 	wpas_p2p_rx_action(wpa_s, mgmt->da, mgmt->sa, mgmt->bssid,
 			   mgmt->u.action.category,
-			   &mgmt->u.action.u.vs_public_action.action,
-			   len - hdr_len, freq);
+			   buf + IEEE80211_HDRLEN + 1,
+			   len - IEEE80211_HDRLEN - 1, freq);
 #endif /* CONFIG_P2P */
 	return 0;
 }
@@ -404,23 +455,17 @@ static int ap_probe_req_rx(void *ctx, const u8 *sa, const u8 *da,
 			   const u8 *bssid, const u8 *ie, size_t ie_len,
 			   int ssi_signal)
 {
-#ifdef CONFIG_P2P
 	struct wpa_supplicant *wpa_s = ctx;
 	return wpas_p2p_probe_req_rx(wpa_s, sa, da, bssid, ie, ie_len,
 				     ssi_signal);
-#else /* CONFIG_P2P */
-	return 0;
-#endif /* CONFIG_P2P */
 }
 
 
 static void ap_wps_reg_success_cb(void *ctx, const u8 *mac_addr,
 				  const u8 *uuid_e)
 {
-#ifdef CONFIG_P2P
 	struct wpa_supplicant *wpa_s = ctx;
 	wpas_p2p_wps_success(wpa_s, mac_addr, 1);
-#endif /* CONFIG_P2P */
 }
 
 
@@ -458,17 +503,13 @@ int wpa_supplicant_create_ap(struct wpa_supplicant *wpa_s,
 	params.ssid = ssid->ssid;
 	params.ssid_len = ssid->ssid_len;
 	switch (ssid->mode) {
-	case WPAS_MODE_INFRA:
-		params.mode = IEEE80211_MODE_INFRA;
-		break;
-	case WPAS_MODE_IBSS:
-		params.mode = IEEE80211_MODE_IBSS;
-		break;
 	case WPAS_MODE_AP:
 	case WPAS_MODE_P2P_GO:
 	case WPAS_MODE_P2P_GROUP_FORMATION:
 		params.mode = IEEE80211_MODE_AP;
 		break;
+	default:
+		return -1;
 	}
 	if (ssid->frequency == 0)
 		ssid->frequency = 2462; /* default channel 11 */
@@ -479,7 +520,7 @@ int wpa_supplicant_create_ap(struct wpa_supplicant *wpa_s,
 		wpa_s->key_mgmt = WPA_KEY_MGMT_PSK;
 	else
 		wpa_s->key_mgmt = WPA_KEY_MGMT_NONE;
-	params.key_mgmt_suite = key_mgmt2driver(wpa_s->key_mgmt);
+	params.key_mgmt_suite = wpa_s->key_mgmt;
 
 	wpa_s->pairwise_cipher = wpa_pick_pairwise_cipher(ssid->pairwise_cipher,
 							  1);
@@ -488,8 +529,7 @@ int wpa_supplicant_create_ap(struct wpa_supplicant *wpa_s,
 			   "cipher.");
 		return -1;
 	}
-	params.pairwise_suite =
-		wpa_cipher_to_suite_driver(wpa_s->pairwise_cipher);
+	params.pairwise_suite = wpa_s->pairwise_cipher;
 	params.group_suite = params.pairwise_suite;
 
 #ifdef CONFIG_P2P
@@ -500,6 +540,8 @@ int wpa_supplicant_create_ap(struct wpa_supplicant *wpa_s,
 
 	if (wpa_s->parent->set_ap_uapsd)
 		params.uapsd = wpa_s->parent->ap_uapsd;
+	else if (params.p2p && (wpa_s->drv_flags & WPA_DRIVER_FLAGS_AP_UAPSD))
+		params.uapsd = 1; /* mandatory for P2P GO */
 	else
 		params.uapsd = -1;
 
@@ -529,8 +571,8 @@ int wpa_supplicant_create_ap(struct wpa_supplicant *wpa_s,
 		  sizeof(wpa_s->conf->wmm_ac_params));
 
 	if (params.uapsd > 0) {
-		conf->bss->wmm_enabled = 1;
-		conf->bss->wmm_uapsd = 1;
+		conf->bss[0]->wmm_enabled = 1;
+		conf->bss[0]->wmm_uapsd = 1;
 	}
 
 	if (wpa_supplicant_conf_ap(wpa_s, ssid, conf)) {
@@ -541,9 +583,9 @@ int wpa_supplicant_create_ap(struct wpa_supplicant *wpa_s,
 
 #ifdef CONFIG_P2P
 	if (ssid->mode == WPAS_MODE_P2P_GO)
-		conf->bss[0].p2p = P2P_ENABLED | P2P_GROUP_OWNER;
+		conf->bss[0]->p2p = P2P_ENABLED | P2P_GROUP_OWNER;
 	else if (ssid->mode == WPAS_MODE_P2P_GROUP_FORMATION)
-		conf->bss[0].p2p = P2P_ENABLED | P2P_GROUP_OWNER |
+		conf->bss[0]->p2p = P2P_ENABLED | P2P_GROUP_OWNER |
 			P2P_GROUP_FORMATION;
 #endif /* CONFIG_P2P */
 
@@ -558,7 +600,7 @@ int wpa_supplicant_create_ap(struct wpa_supplicant *wpa_s,
 	for (i = 0; i < conf->num_bss; i++) {
 		hapd_iface->bss[i] =
 			hostapd_alloc_bss_data(hapd_iface, conf,
-					       &conf->bss[i]);
+					       conf->bss[i]);
 		if (hapd_iface->bss[i] == NULL) {
 			wpa_supplicant_ap_deinit(wpa_s);
 			return -1;
@@ -620,11 +662,10 @@ void wpa_supplicant_ap_deinit(struct wpa_supplicant *wpa_s)
 	wpa_s->current_ssid = NULL;
 	eapol_sm_notify_config(wpa_s->eapol, NULL, NULL);
 	wpa_s->assoc_freq = 0;
-#ifdef CONFIG_P2P
-	if (wpa_s->ap_iface->bss)
-		wpa_s->ap_iface->bss[0]->p2p_group = NULL;
-	wpas_p2p_group_deinit(wpa_s);
-#endif /* CONFIG_P2P */
+	wpas_p2p_ap_deinit(wpa_s);
+	wpa_s->ap_iface->driver_ap_teardown =
+		!!(wpa_s->drv_flags & WPA_DRIVER_FLAGS_AP_TEARDOWN_SUPPORT);
+
 	hostapd_interface_deinit(wpa_s->ap_iface);
 	hostapd_interface_free(wpa_s->ap_iface);
 	wpa_s->ap_iface = NULL;
@@ -647,6 +688,8 @@ void ap_eapol_tx_status(void *ctx, const u8 *dst,
 {
 #ifdef NEED_AP_MLME
 	struct wpa_supplicant *wpa_s = ctx;
+	if (!wpa_s->ap_iface)
+		return;
 	hostapd_tx_status(wpa_s->ap_iface->bss[0], dst, data, len, ack);
 #endif /* NEED_AP_MLME */
 }
@@ -909,6 +952,19 @@ struct wpabuf * wpas_ap_wps_nfc_handover_sel(struct wpa_supplicant *wpa_s,
 	return hostapd_wps_nfc_hs_cr(hapd, ndef);
 }
 
+
+int wpas_ap_wps_nfc_report_handover(struct wpa_supplicant *wpa_s,
+				    const struct wpabuf *req,
+				    const struct wpabuf *sel)
+{
+	struct hostapd_data *hapd;
+
+	if (wpa_s->ap_iface == NULL)
+		return -1;
+	hapd = wpa_s->ap_iface->bss[0];
+	return hostapd_wps_nfc_report_handover(hapd, req, sel);
+}
+
 #endif /* CONFIG_WPS_NFC */
 
 #endif /* CONFIG_WPS */
@@ -1010,9 +1066,9 @@ int wpa_supplicant_ap_update_beacon(struct wpa_supplicant *wpa_s)
 
 #ifdef CONFIG_P2P
 	if (ssid->mode == WPAS_MODE_P2P_GO)
-		iface->conf->bss[0].p2p = P2P_ENABLED | P2P_GROUP_OWNER;
+		iface->conf->bss[0]->p2p = P2P_ENABLED | P2P_GROUP_OWNER;
 	else if (ssid->mode == WPAS_MODE_P2P_GROUP_FORMATION)
-		iface->conf->bss[0].p2p = P2P_ENABLED | P2P_GROUP_OWNER |
+		iface->conf->bss[0]->p2p = P2P_ENABLED | P2P_GROUP_OWNER |
 			P2P_GROUP_FORMATION;
 #endif /* CONFIG_P2P */
 
@@ -1026,14 +1082,40 @@ int wpa_supplicant_ap_update_beacon(struct wpa_supplicant *wpa_s)
 }
 
 
+int ap_switch_channel(struct wpa_supplicant *wpa_s,
+		      struct csa_settings *settings)
+{
+#ifdef NEED_AP_MLME
+	if (!wpa_s->ap_iface || !wpa_s->ap_iface->bss[0])
+		return -1;
+
+	return hostapd_switch_channel(wpa_s->ap_iface->bss[0], settings);
+#else /* NEED_AP_MLME */
+	return -1;
+#endif /* NEED_AP_MLME */
+}
+
+
+int ap_ctrl_iface_chanswitch(struct wpa_supplicant *wpa_s, const char *pos)
+{
+	struct csa_settings settings;
+	int ret = hostapd_parse_csa_settings(pos, &settings);
+
+	if (ret)
+		return ret;
+
+	return ap_switch_channel(wpa_s, &settings);
+}
+
+
 void wpas_ap_ch_switch(struct wpa_supplicant *wpa_s, int freq, int ht,
-		       int offset)
+		       int offset, int width, int cf1, int cf2)
 {
 	if (!wpa_s->ap_iface)
 		return;
 
 	wpa_s->assoc_freq = freq;
-	hostapd_event_ch_switch(wpa_s->ap_iface->bss[0], freq, ht, offset);
+	hostapd_event_ch_switch(wpa_s->ap_iface->bss[0], freq, ht, offset, width, cf1, cf1);
 }
 
 
@@ -1076,3 +1158,48 @@ int wpa_supplicant_ap_mac_addr_filter(struct wpa_supplicant *wpa_s,
 
 	return 0;
 }
+
+
+#ifdef CONFIG_WPS_NFC
+int wpas_ap_wps_add_nfc_pw(struct wpa_supplicant *wpa_s, u16 pw_id,
+			   const struct wpabuf *pw, const u8 *pubkey_hash)
+{
+	struct hostapd_data *hapd;
+	struct wps_context *wps;
+
+	if (!wpa_s->ap_iface)
+		return -1;
+	hapd = wpa_s->ap_iface->bss[0];
+	wps = hapd->wps;
+
+	if (wpa_s->parent->conf->wps_nfc_dh_pubkey == NULL ||
+	    wpa_s->parent->conf->wps_nfc_dh_privkey == NULL) {
+		wpa_printf(MSG_DEBUG, "P2P: No NFC DH key known");
+		return -1;
+	}
+
+	dh5_free(wps->dh_ctx);
+	wpabuf_free(wps->dh_pubkey);
+	wpabuf_free(wps->dh_privkey);
+	wps->dh_privkey = wpabuf_dup(
+		wpa_s->parent->conf->wps_nfc_dh_privkey);
+	wps->dh_pubkey = wpabuf_dup(
+		wpa_s->parent->conf->wps_nfc_dh_pubkey);
+	if (wps->dh_privkey == NULL || wps->dh_pubkey == NULL) {
+		wps->dh_ctx = NULL;
+		wpabuf_free(wps->dh_pubkey);
+		wps->dh_pubkey = NULL;
+		wpabuf_free(wps->dh_privkey);
+		wps->dh_privkey = NULL;
+		return -1;
+	}
+	wps->dh_ctx = dh5_init_fixed(wps->dh_privkey, wps->dh_pubkey);
+	if (wps->dh_ctx == NULL)
+		return -1;
+
+	return wps_registrar_add_nfc_pw_token(hapd->wps->registrar, pubkey_hash,
+					      pw_id,
+					      pw ? wpabuf_head(pw) : NULL,
+					      pw ? wpabuf_len(pw) : 0, 1);
+}
+#endif /* CONFIG_WPS_NFC */

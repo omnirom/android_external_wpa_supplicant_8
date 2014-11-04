@@ -12,9 +12,6 @@
 /* STA flags */
 #define WLAN_STA_AUTH BIT(0)
 #define WLAN_STA_ASSOC BIT(1)
-#define WLAN_STA_PS BIT(2)
-#define WLAN_STA_TIM BIT(3)
-#define WLAN_STA_PERM BIT(4)
 #define WLAN_STA_AUTHORIZED BIT(5)
 #define WLAN_STA_PENDING_POLL BIT(6) /* pending activity poll not ACKed */
 #define WLAN_STA_SHORT_PREAMBLE BIT(7)
@@ -29,6 +26,8 @@
 #define WLAN_STA_WPS2 BIT(16)
 #define WLAN_STA_GAS BIT(17)
 #define WLAN_STA_VHT BIT(18)
+#define WLAN_STA_WNM_SLEEP_MODE BIT(19)
+#define WLAN_STA_VHT_OPMODE_ENABLED BIT(20)
 #define WLAN_STA_PENDING_DISASSOC_CB BIT(29)
 #define WLAN_STA_PENDING_DEAUTH_CB BIT(30)
 #define WLAN_STA_NONERP BIT(31)
@@ -55,11 +54,14 @@ struct sta_info {
 	unsigned int no_short_preamble_set:1;
 	unsigned int no_ht_gf_set:1;
 	unsigned int no_ht_set:1;
+	unsigned int ht40_intolerant_set:1;
 	unsigned int ht_20mhz_set:1;
 	unsigned int no_p2p_set:1;
+	unsigned int qos_map_enabled:1;
+	unsigned int remediation:1;
+	unsigned int hs20_deauth_requested:1;
 
 	u16 auth_alg;
-	u8 previous_ap[6];
 
 	enum {
 		STA_NULLFUNC = 0, STA_DISASSOC, STA_DEAUTH, STA_REMOVE,
@@ -72,12 +74,9 @@ struct sta_info {
 	/* IEEE 802.1X related data */
 	struct eapol_state_machine *eapol_sm;
 
-	/* IEEE 802.11f (IAPP) related data */
-	struct ieee80211_mgmt *last_assoc_req;
-
 	u32 acct_session_id_hi;
 	u32 acct_session_id_lo;
-	time_t acct_session_start;
+	struct os_reltime acct_session_start;
 	int acct_session_started;
 	int acct_terminate_cause; /* Acct-Terminate-Cause */
 	int acct_interim_interval; /* Acct-Interim-Interval */
@@ -104,6 +103,7 @@ struct sta_info {
 
 	struct ieee80211_ht_capabilities *ht_capabilities;
 	struct ieee80211_vht_capabilities *vht_capabilities;
+	u8 vht_opmode;
 
 #ifdef CONFIG_IEEE80211W
 	int sa_query_count; /* number of pending SA Query requests;
@@ -112,7 +112,7 @@ struct sta_info {
 	u8 *sa_query_trans_id; /* buffer of WLAN_SA_QUERY_TR_ID_LEN *
 				* sa_query_count octets of pending SA Query
 				* transaction identifiers */
-	struct os_time sa_query_start;
+	struct os_reltime sa_query_start;
 #endif /* CONFIG_IEEE80211W */
 
 #ifdef CONFIG_INTERWORKING
@@ -124,8 +124,13 @@ struct sta_info {
 	struct wpabuf *wps_ie; /* WPS IE from (Re)Association Request */
 	struct wpabuf *p2p_ie; /* P2P IE from (Re)Association Request */
 	struct wpabuf *hs20_ie; /* HS 2.0 IE from (Re)Association Request */
+	u8 remediation_method;
+	char *remediation_url; /* HS 2.0 Subscription Remediation Server URL */
+	struct wpabuf *hs20_deauth_req;
+	char *hs20_session_info_url;
+	int hs20_disassoc_timer;
 
-	struct os_time connected_time;
+	struct os_reltime connected_time;
 
 #ifdef CONFIG_SAE
 	struct sae_data *sae;
@@ -161,10 +166,14 @@ void ap_sta_hash_add(struct hostapd_data *hapd, struct sta_info *sta);
 void ap_free_sta(struct hostapd_data *hapd, struct sta_info *sta);
 void hostapd_free_stas(struct hostapd_data *hapd);
 void ap_handle_timer(void *eloop_ctx, void *timeout_ctx);
+void ap_sta_replenish_timeout(struct hostapd_data *hapd, struct sta_info *sta,
+			      u32 session_timeout);
 void ap_sta_session_timeout(struct hostapd_data *hapd, struct sta_info *sta,
 			    u32 session_timeout);
 void ap_sta_no_session_timeout(struct hostapd_data *hapd,
 			       struct sta_info *sta);
+void ap_sta_session_warning_timeout(struct hostapd_data *hapd,
+				    struct sta_info *sta, int warning_time);
 struct sta_info * ap_sta_add(struct hostapd_data *hapd, const u8 *addr);
 void ap_sta_disassociate(struct hostapd_data *hapd, struct sta_info *sta,
 			 u16 reason);
@@ -191,5 +200,7 @@ static inline int ap_sta_is_authorized(struct sta_info *sta)
 
 void ap_sta_deauth_cb(struct hostapd_data *hapd, struct sta_info *sta);
 void ap_sta_disassoc_cb(struct hostapd_data *hapd, struct sta_info *sta);
+
+int ap_sta_flags_txt(u32 flags, char *buf, size_t buflen);
 
 #endif /* STA_INFO_H */

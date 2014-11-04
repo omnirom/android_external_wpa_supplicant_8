@@ -30,9 +30,11 @@
 #define DEFAULT_DISABLE_HT 0
 #define DEFAULT_DISABLE_HT40 0
 #define DEFAULT_DISABLE_SGI 0
+#define DEFAULT_DISABLE_LDPC 0
 #define DEFAULT_DISABLE_MAX_AMSDU -1 /* no change */
 #define DEFAULT_AMPDU_FACTOR -1 /* no change */
 #define DEFAULT_AMPDU_DENSITY -1 /* no change */
+#define DEFAULT_USER_SELECTED_SIM 1
 
 struct psk_list_entry {
 	struct dl_list list;
@@ -129,6 +131,11 @@ struct wpa_ssid {
 	 * bssid_set - Whether BSSID is configured for this network
 	 */
 	int bssid_set;
+
+	/**
+	 * go_p2p_dev_addr - GO's P2P Device Address or all zeros if not set
+	 */
+	u8 go_p2p_dev_addr[ETH_ALEN];
 
 	/**
 	 * psk - WPA pre-shared key (256 bits)
@@ -310,12 +317,13 @@ struct wpa_ssid {
 	 * 4 = P2P Group Formation (used internally; not in configuration
 	 * files)
 	 *
-	 * Note: IBSS can only be used with key_mgmt NONE (plaintext and
-	 * static WEP) and key_mgmt=WPA-NONE (fixed group key TKIP/CCMP). In
-	 * addition, ap_scan has to be set to 2 for IBSS. WPA-None requires
-	 * following network block options: proto=WPA, key_mgmt=WPA-NONE,
-	 * pairwise=NONE, group=TKIP (or CCMP, but not both), and psk must also
-	 * be set (either directly or using ASCII passphrase).
+	 * Note: IBSS can only be used with key_mgmt NONE (plaintext and static
+	 * WEP) and WPA-PSK (with proto=RSN). In addition, key_mgmt=WPA-NONE
+	 * (fixed group key TKIP/CCMP) is available for backwards compatibility,
+	 * but its use is deprecated. WPA-None requires following network block
+	 * options: proto=WPA, key_mgmt=WPA-NONE, pairwise=NONE, group=TKIP (or
+	 * CCMP, but not both), and psk must also be set (either directly or
+	 * using ASCII passphrase).
 	 */
 	enum wpas_mode {
 		WPAS_MODE_INFRA = 0,
@@ -393,6 +401,8 @@ struct wpa_ssid {
 	int frequency;
 
 	int ht40;
+
+	int vht;
 
 	/**
 	 * wpa_ptk_rekey - Maximum lifetime for PTK in seconds
@@ -491,13 +501,6 @@ struct wpa_ssid {
 	 */
 	int export_keys;
 
-#ifdef ANDROID_P2P
-	/**
-	 * assoc_retry - Number of times association should be retried.
-	 */
-	int assoc_retry;
-#endif
-
 #ifdef CONFIG_HT_OVERRIDES
 	/**
 	 * disable_ht - Disable HT (IEEE 802.11n) for this network
@@ -522,6 +525,19 @@ struct wpa_ssid {
 	 * to 1 to have it disabled.
 	 */
 	int disable_sgi;
+
+	/**
+	 * disable_ldpc - Disable LDPC for this network
+	 *
+	 * By default, use it if it is available, but this can be configured
+	 * to 1 to have it disabled.
+	 */
+	int disable_ldpc;
+
+	/**
+	 * ht40_intolerant - Indicate 40 MHz intolerant for this network
+	 */
+	int ht40_intolerant;
 
 	/**
 	 * disable_max_amsdu - Disable MAX A-MSDU
@@ -610,7 +626,7 @@ struct wpa_ssid {
 	/**
 	 * disabled_until - Network block disabled until this time if non-zero
 	 */
-	struct os_time disabled_until;
+	struct os_reltime disabled_until;
 
 	/**
 	 * parent_cred - Pointer to parent wpa_cred entry
@@ -620,6 +636,21 @@ struct wpa_ssid {
 	 * dereferences since it may not be updated in all cases.
 	 */
 	void *parent_cred;
+
+#ifdef CONFIG_MACSEC
+	/**
+	 * macsec_policy - Determines the policy for MACsec secure session
+	 *
+	 * 0: MACsec not in use (default)
+	 * 1: MACsec enabled - Should secure, accept key server's advice to
+	 *    determine whether to use a secure session or not.
+	 */
+	int macsec_policy;
+#endif /* CONFIG_MACSEC */
+
+#ifdef CONFIG_HS20
+	int update_identifier;
+#endif /* CONFIG_HS20 */
 };
 
 #endif /* CONFIG_SSID_H */

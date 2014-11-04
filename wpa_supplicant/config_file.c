@@ -219,6 +219,7 @@ static struct wpa_cred * wpa_config_read_cred(FILE *f, int *line, int id)
 	if (cred == NULL)
 		return NULL;
 	cred->id = id;
+	cred->sim_num = DEFAULT_USER_SELECTED_SIM;
 
 	while (wpa_config_get_line(buf, sizeof(buf), f, line, &pos)) {
 		if (os_strcmp(pos, "}") == 0) {
@@ -351,8 +352,8 @@ struct wpa_config * wpa_config_read(const char *name, struct wpa_config *cfgp)
 	FILE *f;
 	char buf[512], *pos;
 	int errors = 0, line = 0;
-	struct wpa_ssid *ssid, *tail = NULL, *head = NULL;
-	struct wpa_cred *cred, *cred_tail = NULL, *cred_head = NULL;
+	struct wpa_ssid *ssid, *tail, *head;
+	struct wpa_cred *cred, *cred_tail, *cred_head;
 	struct wpa_config *config;
 	int id = 0;
 	int cred_id = 0;
@@ -368,8 +369,12 @@ struct wpa_config * wpa_config_read(const char *name, struct wpa_config *cfgp)
 			   "structure");
 		return NULL;
 	}
-	head = config->ssid;
-	cred_head = config->cred;
+	tail = head = config->ssid;
+	while (tail && tail->next)
+		tail = tail->next;
+	cred_tail = cred_head = config->cred;
+	while (cred_tail && cred_tail->next)
+		cred_tail = cred_tail->next;
 
 	wpa_printf(MSG_DEBUG, "Reading configuration file '%s'", name);
 	f = fopen(name, "r");
@@ -606,6 +611,15 @@ static void write_wep_key(FILE *f, int idx, struct wpa_ssid *ssid)
 
 #ifdef CONFIG_P2P
 
+static void write_go_p2p_dev_addr(FILE *f, struct wpa_ssid *ssid)
+{
+	char *value = wpa_config_get(ssid, "go_p2p_dev_addr");
+	if (value == NULL)
+		return;
+	fprintf(f, "\tgo_p2p_dev_addr=%s\n", value);
+	os_free(value);
+}
+
 static void write_p2p_client_list(FILE *f, struct wpa_ssid *ssid)
 {
 	char *value = wpa_config_get(ssid, "p2p_client_list");
@@ -653,6 +667,7 @@ static void wpa_config_write_network(FILE *f, struct wpa_ssid *ssid)
 	write_auth_alg(f, ssid);
 	STR(bgscan);
 	STR(autoscan);
+	STR(scan_freq);
 #ifdef IEEE8021X_EAPOL
 	write_eap(f, ssid);
 	STR(identity);
@@ -666,6 +681,7 @@ static void wpa_config_write_network(FILE *f, struct wpa_ssid *ssid)
 	STR(dh_file);
 	STR(subject_match);
 	STR(altsubject_match);
+	STR(domain_suffix_match);
 	STR(ca_cert2);
 	STR(ca_path2);
 	STR(client_cert2);
@@ -674,6 +690,7 @@ static void wpa_config_write_network(FILE *f, struct wpa_ssid *ssid)
 	STR(dh_file2);
 	STR(subject_match2);
 	STR(altsubject_match2);
+	STR(domain_suffix_match2);
 	STR(phase1);
 	STR(phase2);
 	STR(pcsc);
@@ -699,6 +716,8 @@ static void wpa_config_write_network(FILE *f, struct wpa_ssid *ssid)
 	INT_DEF(eap_workaround, DEFAULT_EAP_WORKAROUND);
 	STR(pac_file);
 	INT_DEFe(fragment_size, DEFAULT_FRAGMENT_SIZE);
+	INTe(ocsp);
+	INT_DEFe(sim_num, DEFAULT_USER_SELECTED_SIM);
 #endif /* IEEE8021X_EAPOL */
 	INT(mode);
 	INT(frequency);
@@ -711,11 +730,18 @@ static void wpa_config_write_network(FILE *f, struct wpa_ssid *ssid)
 #endif /* CONFIG_IEEE80211W */
 	STR(id_str);
 #ifdef CONFIG_P2P
+	write_go_p2p_dev_addr(f, ssid);
 	write_p2p_client_list(f, ssid);
 	write_psk_list(f, ssid);
 #endif /* CONFIG_P2P */
 	INT(dtim_period);
 	INT(beacon_int);
+#ifdef CONFIG_MACSEC
+	INT(macsec_policy);
+#endif /* CONFIG_MACSEC */
+#ifdef CONFIG_HS20
+	INT(update_identifier);
+#endif /* CONFIG_HS20 */
 
 #undef STR
 #undef INT
@@ -725,6 +751,8 @@ static void wpa_config_write_network(FILE *f, struct wpa_ssid *ssid)
 
 static void wpa_config_write_cred(FILE *f, struct wpa_cred *cred)
 {
+	size_t i;
+
 	if (cred->priority)
 		fprintf(f, "\tpriority=%d\n", cred->priority);
 	if (cred->pcsc)
@@ -750,10 +778,12 @@ static void wpa_config_write_cred(FILE *f, struct wpa_cred *cred)
 		fprintf(f, "\timsi=\"%s\"\n", cred->imsi);
 	if (cred->milenage)
 		fprintf(f, "\tmilenage=\"%s\"\n", cred->milenage);
-	if (cred->domain)
-		fprintf(f, "\tdomain=\"%s\"\n", cred->domain);
+	for (i = 0; i < cred->num_domain; i++)
+		fprintf(f, "\tdomain=\"%s\"\n", cred->domain[i]);
+	if (cred->domain_suffix_match)
+		fprintf(f, "\tdomain_suffix_match=\"%s\"\n",
+			cred->domain_suffix_match);
 	if (cred->roaming_consortium_len) {
-		size_t i;
 		fprintf(f, "\troaming_consortium=");
 		for (i = 0; i < cred->roaming_consortium_len; i++)
 			fprintf(f, "%02x", cred->roaming_consortium[i]);
@@ -763,14 +793,15 @@ static void wpa_config_write_cred(FILE *f, struct wpa_cred *cred)
 		const char *name;
 		name = eap_get_name(cred->eap_method[0].vendor,
 				    cred->eap_method[0].method);
-		fprintf(f, "\teap=%s\n", name);
+		if (name)
+			fprintf(f, "\teap=%s\n", name);
 	}
 	if (cred->phase1)
 		fprintf(f, "\tphase1=\"%s\"\n", cred->phase1);
 	if (cred->phase2)
 		fprintf(f, "\tphase2=\"%s\"\n", cred->phase2);
 	if (cred->excluded_ssid) {
-		size_t i, j;
+		size_t j;
 		for (i = 0; i < cred->num_excluded_ssid; i++) {
 			struct excluded_ssid *e = &cred->excluded_ssid[i];
 			fprintf(f, "\texcluded_ssid=");
@@ -779,6 +810,70 @@ static void wpa_config_write_cred(FILE *f, struct wpa_cred *cred)
 			fprintf(f, "\n");
 		}
 	}
+	if (cred->roaming_partner) {
+		for (i = 0; i < cred->num_roaming_partner; i++) {
+			struct roaming_partner *p = &cred->roaming_partner[i];
+			fprintf(f, "\troaming_partner=\"%s,%d,%u,%s\"\n",
+				p->fqdn, p->exact_match, p->priority,
+				p->country);
+		}
+	}
+	if (cred->update_identifier)
+		fprintf(f, "\tupdate_identifier=%d\n", cred->update_identifier);
+
+	if (cred->provisioning_sp)
+		fprintf(f, "\tprovisioning_sp=\"%s\"\n", cred->provisioning_sp);
+	if (cred->sp_priority)
+		fprintf(f, "\tsp_priority=%d\n", cred->sp_priority);
+
+	if (cred->min_dl_bandwidth_home)
+		fprintf(f, "\tmin_dl_bandwidth_home=%u\n",
+			cred->min_dl_bandwidth_home);
+	if (cred->min_ul_bandwidth_home)
+		fprintf(f, "\tmin_ul_bandwidth_home=%u\n",
+			cred->min_ul_bandwidth_home);
+	if (cred->min_dl_bandwidth_roaming)
+		fprintf(f, "\tmin_dl_bandwidth_roaming=%u\n",
+			cred->min_dl_bandwidth_roaming);
+	if (cred->min_ul_bandwidth_roaming)
+		fprintf(f, "\tmin_ul_bandwidth_roaming=%u\n",
+			cred->min_ul_bandwidth_roaming);
+
+	if (cred->max_bss_load)
+		fprintf(f, "\tmax_bss_load=%u\n",
+			cred->max_bss_load);
+
+	if (cred->ocsp)
+		fprintf(f, "\tocsp=%d\n", cred->ocsp);
+
+	if (cred->num_req_conn_capab) {
+		for (i = 0; i < cred->num_req_conn_capab; i++) {
+			int *ports;
+
+			fprintf(f, "\treq_conn_capab=%u",
+				cred->req_conn_capab_proto[i]);
+			ports = cred->req_conn_capab_port[i];
+			if (ports) {
+				int j;
+				for (j = 0; ports[j] != -1; j++) {
+					fprintf(f, "%s%d", j > 0 ? "," : ":",
+						ports[j]);
+				}
+			}
+			fprintf(f, "\n");
+		}
+	}
+
+	if (cred->required_roaming_consortium_len) {
+		fprintf(f, "\trequired_roaming_consortium=");
+		for (i = 0; i < cred->required_roaming_consortium_len; i++)
+			fprintf(f, "%02x",
+				cred->required_roaming_consortium[i]);
+		fprintf(f, "\n");
+	}
+
+	if (cred->sim_num != DEFAULT_USER_SELECTED_SIM)
+		fprintf(f, "\tsim_num=%d\n", cred->sim_num);
 }
 
 
@@ -924,6 +1019,9 @@ static void wpa_config_write_global(FILE *f, struct wpa_config *config)
 		fprintf(f, "p2p_intra_bss=%u\n", config->p2p_intra_bss);
 	if (config->p2p_group_idle)
 		fprintf(f, "p2p_group_idle=%u\n", config->p2p_group_idle);
+	if (config->p2p_passphrase_len)
+		fprintf(f, "p2p_passphrase_len=%u\n",
+			config->p2p_passphrase_len);
 	if (config->p2p_pref_chan) {
 		unsigned int i;
 		fprintf(f, "p2p_pref_chan=");
@@ -934,8 +1032,23 @@ static void wpa_config_write_global(FILE *f, struct wpa_config *config)
 		}
 		fprintf(f, "\n");
 	}
+	if (config->p2p_no_go_freq.num) {
+		char *val = freq_range_list_str(&config->p2p_no_go_freq);
+		if (val) {
+			fprintf(f, "p2p_no_go_freq=%s\n", val);
+			os_free(val);
+		}
+	}
+	if (config->p2p_add_cli_chan)
+		fprintf(f, "p2p_add_cli_chan=%d\n", config->p2p_add_cli_chan);
+	if (config->p2p_optimize_listen_chan !=
+	    DEFAULT_P2P_OPTIMIZE_LISTEN_CHAN)
+		fprintf(f, "p2p_optimize_listen_chan=%d\n",
+			config->p2p_optimize_listen_chan);
 	if (config->p2p_go_ht40)
 		fprintf(f, "p2p_go_ht40=%u\n", config->p2p_go_ht40);
+	if (config->p2p_go_vht)
+		fprintf(f, "p2p_go_vht=%u\n", config->p2p_go_vht);
 	if (config->p2p_disabled)
 		fprintf(f, "p2p_disabled=%u\n", config->p2p_disabled);
 	if (config->p2p_no_group_iface)
@@ -1049,9 +1162,23 @@ static void wpa_config_write_global(FILE *f, struct wpa_config *config)
 		fprintf(f, "sched_scan_interval=%u\n",
 			config->sched_scan_interval);
 
+	if (config->external_sim)
+		fprintf(f, "external_sim=%d\n", config->external_sim);
+
 	if (config->tdls_external_control)
-		fprintf(f, "tdls_external_control=%u\n",
+		fprintf(f, "tdls_external_control=%d\n",
 			config->tdls_external_control);
+
+	if (config->wowlan_triggers)
+		fprintf(f, "wowlan_triggers=%s\n",
+			config->wowlan_triggers);
+
+	if (config->bgscan)
+		fprintf(f, "bgscan=\"%s\"\n", config->bgscan);
+
+	if (config->p2p_search_delay != DEFAULT_P2P_SEARCH_DELAY)
+		fprintf(f, "p2p_search_delay=%u\n",
+			config->p2p_search_delay);
 }
 
 #endif /* CONFIG_NO_CONFIG_WRITE */
@@ -1079,6 +1206,8 @@ int wpa_config_write(const char *name, struct wpa_config *config)
 	wpa_config_write_global(f, config);
 
 	for (cred = config->cred; cred; cred = cred->next) {
+		if (cred->temporary)
+			continue;
 		fprintf(f, "\ncred={\n");
 		wpa_config_write_cred(f, cred);
 		fprintf(f, "}\n");

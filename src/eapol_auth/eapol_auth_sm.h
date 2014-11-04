@@ -60,7 +60,8 @@ struct eapol_auth_cb {
 			   size_t datalen);
 	void (*aaa_send)(void *ctx, void *sta_ctx, const u8 *data,
 			 size_t datalen);
-	void (*finished)(void *ctx, void *sta_ctx, int success, int preauth);
+	void (*finished)(void *ctx, void *sta_ctx, int success, int preauth,
+			 int remediation);
 	int (*get_eap_user)(void *ctx, const u8 *identity, size_t identity_len,
 			    int phase2, struct eap_user *user);
 	int (*sta_entry_alive)(void *ctx, const u8 *addr);
@@ -83,8 +84,8 @@ eapol_auth_alloc(struct eapol_authenticator *eapol, const u8 *addr,
 		 const char *identity, const char *radius_cui);
 void eapol_auth_free(struct eapol_state_machine *sm);
 void eapol_auth_step(struct eapol_state_machine *sm);
-void eapol_auth_dump_state(FILE *f, const char *prefix,
-			   struct eapol_state_machine *sm);
+int eapol_auth_dump_state(struct eapol_state_machine *sm, char *buf,
+			  size_t buflen);
 int eapol_auth_eap_pending_cb(struct eapol_state_machine *sm, void *ctx);
 
 #endif /* EAPOL_AUTH_SM_H */

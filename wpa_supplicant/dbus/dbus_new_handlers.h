@@ -101,6 +101,9 @@ DBusMessage * wpas_dbus_handler_add_network(DBusMessage *message,
 DBusMessage * wpas_dbus_handler_reassociate(DBusMessage *message,
 					    struct wpa_supplicant *wpa_s);
 
+DBusMessage * wpas_dbus_handler_reattach(DBusMessage *message,
+					 struct wpa_supplicant *wpa_s);
+
 DBusMessage * wpas_dbus_handler_remove_network(DBusMessage *message,
 					       struct wpa_supplicant *wpa_s);
 
@@ -121,6 +124,9 @@ DBusMessage * wpas_dbus_handler_get_blob(DBusMessage *message,
 
 DBusMessage * wpas_dbus_handler_remove_blob(DBusMessage *message,
 					    struct wpa_supplicant *wpa_s);
+
+DBusMessage * wpas_dbus_handler_set_pkcs11_engine_and_module_path(
+	DBusMessage *message, struct wpa_supplicant *wpa_s);
 
 DBusMessage * wpas_dbus_handler_flush_bss(DBusMessage *message,
 					  struct wpa_supplicant *wpa_s);
@@ -218,6 +224,14 @@ dbus_bool_t wpas_dbus_getter_bsss(DBusMessageIter *iter, DBusError *error,
 dbus_bool_t wpas_dbus_getter_networks(DBusMessageIter *iter, DBusError *error,
 				      void *user_data);
 
+dbus_bool_t wpas_dbus_getter_pkcs11_engine_path(DBusMessageIter *iter,
+						DBusError *error,
+						void *user_data);
+
+dbus_bool_t wpas_dbus_getter_pkcs11_module_path(DBusMessageIter *iter,
+						DBusError *error,
+						void *user_data);
+
 dbus_bool_t wpas_dbus_getter_blobs(DBusMessageIter *iter, DBusError *error,
 				   void *user_data);
 
@@ -277,6 +291,15 @@ dbus_bool_t wpas_dbus_getter_process_credentials(DBusMessageIter *iter,
 dbus_bool_t wpas_dbus_setter_process_credentials(DBusMessageIter *iter,
 						 DBusError *error,
 						 void *user_data);
+
+DBusMessage * wpas_dbus_handler_tdls_discover(DBusMessage *message,
+					      struct wpa_supplicant *wpa_s);
+DBusMessage * wpas_dbus_handler_tdls_setup(DBusMessage *message,
+					   struct wpa_supplicant *wpa_s);
+DBusMessage * wpas_dbus_handler_tdls_status(DBusMessage *message,
+					    struct wpa_supplicant *wpa_s);
+DBusMessage * wpas_dbus_handler_tdls_teardown(DBusMessage *message,
+					      struct wpa_supplicant *wpa_s);
 
 DBusMessage * wpas_dbus_error_invalid_args(DBusMessage *message,
 					   const char *arg);

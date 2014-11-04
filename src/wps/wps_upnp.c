@@ -227,6 +227,8 @@ void format_date(struct wpabuf *buf)
 
 	t = time(NULL);
 	date = gmtime(&t);
+	if (date == NULL)
+		return;
 	wpabuf_printf(buf, "%s, %02d %s %d %02d:%02d:%02d GMT",
 		      &weekday_str[date->tm_wday * 4], date->tm_mday,
 		      &month_str[date->tm_mon * 4], date->tm_year + 1900,
@@ -432,23 +434,6 @@ static void subscr_addr_list_create(struct subscription *s,
 }
 
 
-int send_wpabuf(int fd, struct wpabuf *buf)
-{
-	wpa_printf(MSG_DEBUG, "WPS UPnP: Send %lu byte message",
-		   (unsigned long) wpabuf_len(buf));
-	errno = 0;
-	if (write(fd, wpabuf_head(buf), wpabuf_len(buf)) !=
-	    (int) wpabuf_len(buf)) {
-		wpa_printf(MSG_ERROR, "WPS UPnP: Failed to send buffer: "
-			   "errno=%d (%s)",
-			   errno, strerror(errno));
-		return -1;
-	}
-
-	return 0;
-}
-
-
 static void wpabuf_put_property(struct wpabuf *buf, const char *name,
 				const char *value)
 {
@@ -480,14 +465,14 @@ static void upnp_wps_device_send_event(struct upnp_wps_device_sm *sm)
 		"<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
 		"<e:propertyset xmlns:e=\"urn:schemas-upnp-org:event-1-0\">\n";
 	const char *format_tail = "</e:propertyset>\n";
-	struct os_time now;
+	struct os_reltime now;
 
 	if (dl_list_empty(&sm->subscriptions)) {
 		/* optimize */
 		return;
 	}
 
-	if (os_get_time(&now) == 0) {
+	if (os_get_reltime(&now) == 0) {
 		if (now.sec != sm->last_event_sec) {
 			sm->last_event_sec = now.sec;
 			sm->num_events_in_sec = 1;
@@ -611,7 +596,10 @@ static struct wpabuf * build_fake_wsc_ack(void)
 	wpabuf_put_be16(msg, ATTR_REGISTRAR_NONCE);
 	wpabuf_put_be16(msg, WPS_NONCE_LEN);
 	wpabuf_put(msg, WPS_NONCE_LEN);
-	wps_build_wfa_ext(msg, 0, NULL, 0);
+	if (wps_build_wfa_ext(msg, 0, NULL, 0)) {
+		wpabuf_free(msg);
+		return NULL;
+	}
 	return msg;
 }
 

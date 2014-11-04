@@ -9,18 +9,19 @@
 #include "includes.h"
 
 #include <time.h>
+#include <sys/wait.h>
 
 #ifdef ANDROID
 #include <sys/capability.h>
-#include <linux/prctl.h>
+#include <sys/prctl.h>
 #include <private/android_filesystem_config.h>
 #endif /* ANDROID */
 
 #include "os.h"
+#include "common.h"
 
 #ifdef WPA_TRACE
 
-#include "common.h"
 #include "wpa_debug.h"
 #include "trace.h"
 #include "list.h"
@@ -57,6 +58,43 @@ int os_get_time(struct os_time *t)
 	t->sec = tv.tv_sec;
 	t->usec = tv.tv_usec;
 	return res;
+}
+
+
+int os_get_reltime(struct os_reltime *t)
+{
+#if defined(CLOCK_BOOTTIME)
+	static clockid_t clock_id = CLOCK_BOOTTIME;
+#elif defined(CLOCK_MONOTONIC)
+	static clockid_t clock_id = CLOCK_MONOTONIC;
+#else
+	static clockid_t clock_id = CLOCK_REALTIME;
+#endif
+	struct timespec ts;
+	int res;
+
+	while (1) {
+		res = clock_gettime(clock_id, &ts);
+		if (res == 0) {
+			t->sec = ts.tv_sec;
+			t->usec = ts.tv_nsec / 1000;
+			return 0;
+		}
+		switch (clock_id) {
+#ifdef CLOCK_BOOTTIME
+		case CLOCK_BOOTTIME:
+			clock_id = CLOCK_MONOTONIC;
+			break;
+#endif
+#ifdef CLOCK_MONOTONIC
+		case CLOCK_MONOTONIC:
+			clock_id = CLOCK_REALTIME;
+			break;
+#endif
+		case CLOCK_REALTIME:
+			return -1;
+		}
+	}
 }
 
 
@@ -268,7 +306,7 @@ int os_program_init(void)
 	struct __user_cap_header_struct header;
 	struct __user_cap_data_struct cap;
 
-	setgroups(sizeof(groups)/sizeof(groups[0]), groups);
+	setgroups(ARRAY_SIZE(groups), groups);
 
 	prctl(PR_SET_KEEPCAPS, 1, 0, 0, 0);
 
@@ -370,6 +408,16 @@ char * os_readfile(const char *name, size_t *len)
 }
 
 
+int os_file_exists(const char *fname)
+{
+	FILE *f = fopen(fname, "rb");
+	if (f == NULL)
+		return 0;
+	fclose(f);
+	return 1;
+}
+
+
 #ifndef WPA_TRACE
 void * os_zalloc(size_t size)
 {
@@ -400,6 +448,20 @@ size_t os_strlcpy(char *dest, const char *src, size_t siz)
 	}
 
 	return s - src - 1;
+}
+
+
+int os_memcmp_const(const void *a, const void *b, size_t len)
+{
+	const u8 *aa = a;
+	const u8 *bb = b;
+	size_t i;
+	u8 res;
+
+	for (res = 0, i = 0; i < len; i++)
+		res |= aa[i] ^ bb[i];
+
+	return res;
 }
 
 
@@ -493,3 +555,57 @@ char * os_strdup(const char *s)
 }
 
 #endif /* WPA_TRACE */
+
+
+int os_exec(const char *program, const char *arg, int wait_completion)
+{
+	pid_t pid;
+	int pid_status;
+
+	pid = fork();
+	if (pid < 0) {
+		perror("fork");
+		return -1;
+	}
+
+	if (pid == 0) {
+		/* run the external command in the child process */
+		const int MAX_ARG = 30;
+		char *_program, *_arg, *pos;
+		char *argv[MAX_ARG + 1];
+		int i;
+
+		_program = os_strdup(program);
+		_arg = os_strdup(arg);
+
+		argv[0] = _program;
+
+		i = 1;
+		pos = _arg;
+		while (i < MAX_ARG && pos && *pos) {
+			while (*pos == ' ')
+				pos++;
+			if (*pos == '\0')
+				break;
+			argv[i++] = pos;
+			pos = os_strchr(pos, ' ');
+			if (pos)
+				*pos++ = '\0';
+		}
+		argv[i] = NULL;
+
+		execv(program, argv);
+		perror("execv");
+		os_free(_program);
+		os_free(_arg);
+		exit(0);
+		return -1;
+	}
+
+	if (wait_completion) {
+		/* wait for the child process to complete in the parent */
+		waitpid(pid, &pid_status, 0);
+	}
+
+	return 0;
+}

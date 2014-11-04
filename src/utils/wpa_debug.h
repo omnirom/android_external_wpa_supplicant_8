@@ -11,6 +11,10 @@
 
 #include "wpabuf.h"
 
+extern int wpa_debug_level;
+extern int wpa_debug_show_keys;
+extern int wpa_debug_timestamp;
+
 /* Debugging function - conditional printf and hex dump. Driver wrappers can
  * use these for debugging purposes. */
 
@@ -77,7 +81,7 @@ PRINTF_FORMAT(2, 3);
  * output may be directed to stdout, stderr, and/or syslog based on
  * configuration. The contents of buf is printed out has hex dump.
  */
-void wpa_hexdump(int level, const char *title, const u8 *buf, size_t len);
+void wpa_hexdump(int level, const char *title, const void *buf, size_t len);
 
 static inline void wpa_hexdump_buf(int level, const char *title,
 				   const struct wpabuf *buf)
@@ -99,7 +103,7 @@ static inline void wpa_hexdump_buf(int level, const char *title,
  * like wpa_hexdump(), but by default, does not include secret keys (passwords,
  * etc.) in debug output.
  */
-void wpa_hexdump_key(int level, const char *title, const u8 *buf, size_t len);
+void wpa_hexdump_key(int level, const char *title, const void *buf, size_t len);
 
 static inline void wpa_hexdump_buf_key(int level, const char *title,
 				       const struct wpabuf *buf)
@@ -121,7 +125,7 @@ static inline void wpa_hexdump_buf_key(int level, const char *title,
  * the hex numbers and ASCII characters (for printable range) are shown. 16
  * bytes per line will be shown.
  */
-void wpa_hexdump_ascii(int level, const char *title, const u8 *buf,
+void wpa_hexdump_ascii(int level, const char *title, const void *buf,
 		       size_t len);
 
 /**
@@ -138,7 +142,7 @@ void wpa_hexdump_ascii(int level, const char *title, const u8 *buf,
  * bytes per line will be shown. This works like wpa_hexdump_ascii(), but by
  * default, does not include secret keys (passwords, etc.) in debug output.
  */
-void wpa_hexdump_ascii_key(int level, const char *title, const u8 *buf,
+void wpa_hexdump_ascii_key(int level, const char *title, const void *buf,
 			   size_t len);
 
 /*
@@ -156,6 +160,7 @@ void wpa_hexdump_ascii_key(int level, const char *title, const u8 *buf,
 #define wpa_msg(args...) do { } while (0)
 #define wpa_msg_ctrl(args...) do { } while (0)
 #define wpa_msg_global(args...) do { } while (0)
+#define wpa_msg_global_ctrl(args...) do { } while (0)
 #define wpa_msg_no_global(args...) do { } while (0)
 #define wpa_msg_register_cb(f) do { } while (0)
 #define wpa_msg_register_ifname_cb(f) do { } while (0)
@@ -205,6 +210,21 @@ PRINTF_FORMAT(3, 4);
  * specified by the context data).
  */
 void wpa_msg_global(void *ctx, int level, const char *fmt, ...)
+PRINTF_FORMAT(3, 4);
+
+/**
+ * wpa_msg_global_ctrl - Conditional global printf for ctrl_iface monitors
+ * @ctx: Pointer to context data; this is the ctx variable registered
+ *	with struct wpa_driver_ops::init()
+ * @level: priority level (MSG_*) of the message
+ * @fmt: printf format string, followed by optional arguments
+ *
+ * This function is used to print conditional debugging and error messages.
+ * This function is like wpa_msg_global(), but it sends the output only to the
+ * attached global ctrl_iface monitors. In other words, it can be used for
+ * frequent events that do not need to be sent to syslog.
+ */
+void wpa_msg_global_ctrl(void *ctx, int level, const char *fmt, ...)
 PRINTF_FORMAT(3, 4);
 
 /**

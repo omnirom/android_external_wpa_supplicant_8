@@ -134,8 +134,10 @@ static struct crypto_bignum * sae_get_rand(struct sae_data *sae)
 			return NULL;
 		if (crypto_bignum_is_zero(bn) ||
 		    crypto_bignum_is_one(bn) ||
-		    crypto_bignum_cmp(bn, sae->tmp->order) >= 0)
+		    crypto_bignum_cmp(bn, sae->tmp->order) >= 0) {
+			crypto_bignum_deinit(bn, 0);
 			continue;
+		}
 		break;
 	}
 
@@ -503,6 +505,8 @@ int sae_prepare_commit(const u8 *addr1, const u8 *addr2,
 		       const u8 *password, size_t password_len,
 		       struct sae_data *sae)
 {
+	if (sae->tmp == NULL)
+		return -1;
 	if (sae->tmp->ec && sae_derive_pwe_ecc(sae, addr1, addr2, password,
 					  password_len) < 0)
 		return -1;
@@ -634,7 +638,8 @@ fail:
 int sae_process_commit(struct sae_data *sae)
 {
 	u8 k[SAE_MAX_PRIME_LEN];
-	if ((sae->tmp->ec && sae_derive_k_ecc(sae, k) < 0) ||
+	if (sae->tmp == NULL ||
+	    (sae->tmp->ec && sae_derive_k_ecc(sae, k) < 0) ||
 	    (sae->tmp->dh && sae_derive_k_ffc(sae, k) < 0) ||
 	    sae_derive_keys(sae, k) < 0)
 		return -1;
@@ -646,6 +651,10 @@ void sae_write_commit(struct sae_data *sae, struct wpabuf *buf,
 		      const struct wpabuf *token)
 {
 	u8 *pos;
+
+	if (sae->tmp == NULL)
+		return;
+
 	wpabuf_put_le16(buf, sae->group); /* Finite Cyclic Group */
 	if (token)
 		wpabuf_put_buf(buf, token);
@@ -678,7 +687,7 @@ static u16 sae_group_allowed(struct sae_data *sae, int *allowed_groups,
 {
 	if (allowed_groups) {
 		int i;
-		for (i = 0; allowed_groups[i] >= 0; i++) {
+		for (i = 0; allowed_groups[i] > 0; i++) {
 			if (allowed_groups[i] == group)
 				break;
 		}
@@ -699,6 +708,11 @@ static u16 sae_group_allowed(struct sae_data *sae, int *allowed_groups,
 		wpa_printf(MSG_DEBUG, "SAE: Unsupported Finite Cyclic Group %u",
 			   group);
 		return WLAN_STATUS_FINITE_CYCLIC_GROUP_NOT_SUPPORTED;
+	}
+
+	if (sae->tmp == NULL) {
+		wpa_printf(MSG_DEBUG, "SAE: Group information not yet initialized");
+		return WLAN_STATUS_UNSPECIFIED_FAILURE;
 	}
 
 	if (sae->tmp->dh && !allowed_groups) {
@@ -797,7 +811,7 @@ static u16 sae_parse_commit_element_ecc(struct sae_data *sae, const u8 *pos,
 
 	/* element x and y coordinates < p */
 	if (os_memcmp(pos, prime, sae->tmp->prime_len) >= 0 ||
-	    os_memcmp(pos + sae->tmp->prime_len + sae->tmp->prime_len, prime,
+	    os_memcmp(pos + sae->tmp->prime_len, prime,
 		      sae->tmp->prime_len) >= 0) {
 		wpa_printf(MSG_DEBUG, "SAE: Invalid coordinates in peer "
 			   "element");
@@ -985,6 +999,9 @@ void sae_write_confirm(struct sae_data *sae, struct wpabuf *buf)
 {
 	const u8 *sc;
 
+	if (sae->tmp == NULL)
+		return;
+
 	/* Send-Confirm */
 	sc = wpabuf_put(buf, 0);
 	wpabuf_put_le16(buf, sae->send_confirm);
@@ -1016,6 +1033,11 @@ int sae_check_confirm(struct sae_data *sae, const u8 *data, size_t len)
 
 	wpa_printf(MSG_DEBUG, "SAE: peer-send-confirm %u", WPA_GET_LE16(data));
 
+	if (sae->tmp == NULL) {
+		wpa_printf(MSG_DEBUG, "SAE: Temporary data not yet available");
+		return -1;
+	}
+
 	if (sae->tmp->ec)
 		sae_cn_confirm_ecc(sae, data, sae->peer_commit_scalar,
 				   sae->tmp->peer_commit_element_ecc,
@@ -1029,7 +1051,7 @@ int sae_check_confirm(struct sae_data *sae, const u8 *data, size_t len)
 				   sae->tmp->own_commit_element_ffc,
 				   verifier);
 
-	if (os_memcmp(verifier, data + 2, SHA256_MAC_LEN) != 0) {
+	if (os_memcmp_const(verifier, data + 2, SHA256_MAC_LEN) != 0) {
 		wpa_printf(MSG_DEBUG, "SAE: Confirm mismatch");
 		wpa_hexdump(MSG_DEBUG, "SAE: Received confirm",
 			    data + 2, SHA256_MAC_LEN);

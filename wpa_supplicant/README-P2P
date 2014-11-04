@@ -72,7 +72,8 @@ over the main control interface.
 Device Discovery
 
 p2p_find [timeout in seconds] [type=<social|progressive>] \
-	[dev_id=<addr>] [delay=<search delay in ms>]
+	[dev_id=<addr>] [dev_type=<device type>] \
+	[delay=<search delay in ms>]
 
 The default behavior is to run a single full scan in the beginning and
 then scan only social channels. type=social will scan only social
@@ -86,6 +87,10 @@ The optional dev_id option can be used to specify a single P2P peer to
 search for. The optional delay parameter can be used to request an extra
 delay to be used between search iterations (e.g., to free up radio
 resources for concurrent operations).
+
+The optional dev_type option can be used to specify a single device type
+(primary or secondary) to search for, e.g.,
+"p2p_find dev_type=1-0050F204-1".
 
 p2p_listen [timeout in seconds]
 
@@ -125,7 +130,7 @@ join-a-group style PD instead of GO Negotiation style PD.
 
 p2p_connect <peer device address> <pbc|pin|PIN#> [display|keypad]
 	[persistent|persistent=<network id>] [join|auth]
-	[go_intent=<0..15>] [freq=<in MHz>] [ht40] [provdisc]
+	[go_intent=<0..15>] [freq=<in MHz>] [ht40] [vht] [provdisc]
 
 Start P2P group formation with a discovered P2P peer. This includes
 optional group owner negotiation, group interface setup, provisioning,
@@ -166,7 +171,8 @@ used prior to starting GO Negotiation as a workaround with some deployed
 P2P implementations that require this to allow the user to accept the
 connection.
 
-p2p_group_add [persistent|persistent=<network id>] [freq=<freq in MHz>] [ht40]
+p2p_group_add [persistent|persistent=<network id>] [freq=<freq in MHz>]
+	[ht40] [vht]
 
 Set up a P2P group owner manually (i.e., without group owner
 negotiation with a specific peer). This is also known as autonomous
@@ -224,9 +230,8 @@ discovery protocols and requests this to be sent to all discovered
 peers (note: this can result in long response frames). The pending
 requests are sent during device discovery (see p2p_find).
 
-Only a single pending wildcard query is supported, but there can be
-multiple pending peer device specific queries (each will be sent in
-sequence whenever the peer is found).
+There can be multiple pending peer device specific queries (each will be
+sent in sequence whenever the peer is found).
 
 This command returns an identifier for the pending query (e.g.,
 "1f77628") that can be used to cancel the request. Directed requests
@@ -373,7 +378,8 @@ Remove all local services from internal SD query processing.
 Invitation
 
 p2p_invite [persistent=<network id>|group=<group ifname>] [peer=address]
-	[go_dev_addr=address] [freq=<freq in MHz>] [ht40] [pref=<MHz>]
+	[go_dev_addr=address] [freq=<freq in MHz>] [ht40] [vht]
+	[pref=<MHz>]
 
 Invite a peer to join a group (e.g., group=wlan1) or to reinvoke a
 persistent group (e.g., persistent=4). If the peer device is the GO of
@@ -416,9 +422,11 @@ p2p_presence_req [<duration> <interval>] [<duration> <interval>]
 Send a P2P Presence Request to the GO (this is only available when
 acting as a P2P client). If no duration/interval pairs are given, the
 request indicates that this client has no special needs for GO
-presence. the first parameter pair gives the preferred duration and
+presence. The first parameter pair gives the preferred duration and
 interval values in microseconds. If the second pair is included, that
-indicates which value would be acceptable.
+indicates which value would be acceptable. This command returns OK
+immediately and the response from the GO is indicated in a
+P2P-PRESENCE-RESPONSE event message.
 
 Parameters
 
@@ -545,6 +553,13 @@ accepted without separate authorization (e.g., user interaction).
 set country <two character country code>
 
 Set country code (this is included in some P2P messages).
+
+set p2p_search_delay <delay>
+
+Set p2p_search_delay which adds extra delay in milliseconds between
+concurrent search iterations to make p2p_find friendlier to concurrent
+operations by avoiding it from taking 100% of radio resources. The
+default value is 500 ms.
 
 Status
 

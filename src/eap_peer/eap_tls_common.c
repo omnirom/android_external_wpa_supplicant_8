@@ -23,6 +23,10 @@ static struct wpabuf * eap_tls_msg_alloc(EapType type, size_t payload_len,
 		return eap_msg_alloc(EAP_VENDOR_UNAUTH_TLS,
 				     EAP_VENDOR_TYPE_UNAUTH_TLS, payload_len,
 				     code, identifier);
+	if (type == EAP_WFA_UNAUTH_TLS_TYPE)
+		return eap_msg_alloc(EAP_VENDOR_WFA_NEW,
+				     EAP_VENDOR_WFA_UNAUTH_TLS, payload_len,
+				     code, identifier);
 	return eap_msg_alloc(EAP_VENDOR_IETF, type, payload_len, code,
 			     identifier);
 }
@@ -64,6 +68,14 @@ static void eap_tls_params_flags(struct tls_connection_params *params,
 		params->flags |= TLS_CONN_DISABLE_SESSION_TICKET;
 	if (os_strstr(txt, "tls_disable_session_ticket=0"))
 		params->flags &= ~TLS_CONN_DISABLE_SESSION_TICKET;
+	if (os_strstr(txt, "tls_disable_tlsv1_1=1"))
+		params->flags |= TLS_CONN_DISABLE_TLSv1_1;
+	if (os_strstr(txt, "tls_disable_tlsv1_1=0"))
+		params->flags &= ~TLS_CONN_DISABLE_TLSv1_1;
+	if (os_strstr(txt, "tls_disable_tlsv1_2=1"))
+		params->flags |= TLS_CONN_DISABLE_TLSv1_2;
+	if (os_strstr(txt, "tls_disable_tlsv1_2=0"))
+		params->flags &= ~TLS_CONN_DISABLE_TLSv1_2;
 }
 
 
@@ -78,6 +90,7 @@ static void eap_tls_params_from_conf1(struct tls_connection_params *params,
 	params->dh_file = (char *) config->dh_file;
 	params->subject_match = (char *) config->subject_match;
 	params->altsubject_match = (char *) config->altsubject_match;
+	params->suffix_match = config->domain_suffix_match;
 	params->engine = config->engine;
 	params->engine_id = config->engine_id;
 	params->pin = config->pin;
@@ -99,6 +112,7 @@ static void eap_tls_params_from_conf2(struct tls_connection_params *params,
 	params->dh_file = (char *) config->dh_file2;
 	params->subject_match = (char *) config->subject_match2;
 	params->altsubject_match = (char *) config->altsubject_match2;
+	params->suffix_match = config->domain_suffix_match2;
 	params->engine = config->engine2;
 	params->engine_id = config->engine2_id;
 	params->pin = config->pin2;
@@ -835,6 +849,10 @@ const u8 * eap_peer_tls_process_init(struct eap_sm *sm,
 	if (eap_type == EAP_UNAUTH_TLS_TYPE)
 		pos = eap_hdr_validate(EAP_VENDOR_UNAUTH_TLS,
 				       EAP_VENDOR_TYPE_UNAUTH_TLS, reqData,
+				       &left);
+	else if (eap_type == EAP_WFA_UNAUTH_TLS_TYPE)
+		pos = eap_hdr_validate(EAP_VENDOR_WFA_NEW,
+				       EAP_VENDOR_WFA_UNAUTH_TLS, reqData,
 				       &left);
 	else
 		pos = eap_hdr_validate(EAP_VENDOR_IETF, eap_type, reqData,

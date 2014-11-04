@@ -13,6 +13,7 @@
 #include "utils/common.h"
 #include "utils/list.h"
 #include "common/ieee802_11_defs.h"
+#include "common/wpa_ctrl.h"
 #include "drivers/driver.h"
 #include "hostapd.h"
 #include "ap_drv_ops.h"
@@ -279,10 +280,11 @@ static void acs_cleanup(struct hostapd_iface *iface)
 }
 
 
-void acs_fail(struct hostapd_iface *iface)
+static void acs_fail(struct hostapd_iface *iface)
 {
 	wpa_printf(MSG_ERROR, "ACS: Failed to start");
 	acs_cleanup(iface);
+	hostapd_disable_iface(iface);
 }
 
 
@@ -352,23 +354,26 @@ acs_survey_chan_interference_factor(struct hostapd_iface *iface,
 }
 
 
-static int acs_usable_chan(struct hostapd_channel_data *chan)
-{
-	if (dl_list_empty(&chan->survey_list))
-		return 0;
-	if (chan->flag & HOSTAPD_CHAN_DISABLED)
-		return 0;
-	return 1;
-}
-
-
 static int acs_usable_ht40_chan(struct hostapd_channel_data *chan)
 {
 	const int allowed[] = { 36, 44, 52, 60, 100, 108, 116, 124, 132, 149,
 				157, 184, 192 };
 	unsigned int i;
 
-	for (i = 0; i < sizeof(allowed) / sizeof(allowed[0]); i++)
+	for (i = 0; i < ARRAY_SIZE(allowed); i++)
+		if (chan->chan == allowed[i])
+			return 1;
+
+	return 0;
+}
+
+
+static int acs_usable_vht80_chan(struct hostapd_channel_data *chan)
+{
+	const int allowed[] = { 36, 52, 100, 116, 132, 149 };
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(allowed); i++)
 		if (chan->chan == allowed[i])
 			return 1;
 
@@ -398,28 +403,54 @@ static int acs_survey_is_sufficient(struct freq_survey *survey)
 }
 
 
+static int acs_survey_list_is_sufficient(struct hostapd_channel_data *chan)
+{
+	struct freq_survey *survey;
+
+	dl_list_for_each(survey, &chan->survey_list, struct freq_survey, list)
+	{
+		if (!acs_survey_is_sufficient(survey)) {
+			wpa_printf(MSG_ERROR, "ACS: Channel %d has insufficient survey data",
+				   chan->chan);
+			return 0;
+		}
+	}
+
+	return 1;
+
+}
+
+
 static int acs_surveys_are_sufficient(struct hostapd_iface *iface)
 {
 	int i;
 	struct hostapd_channel_data *chan;
-	struct freq_survey *survey;
+	int valid = 0;
 
 	for (i = 0; i < iface->current_mode->num_channels; i++) {
 		chan = &iface->current_mode->channels[i];
 		if (chan->flag & HOSTAPD_CHAN_DISABLED)
 			continue;
 
-		dl_list_for_each(survey, &chan->survey_list,
-				 struct freq_survey, list)
-		{
-			if (!acs_survey_is_sufficient(survey)) {
-				wpa_printf(MSG_ERROR, "ACS: Channel %d has insufficient survey data",
-					   chan->chan);
-				return 0;
-			}
-		}
+		if (!acs_survey_list_is_sufficient(chan))
+			continue;
+
+		valid++;
 	}
 
+	/* We need at least survey data for one channel */
+	return !!valid;
+}
+
+
+static int acs_usable_chan(struct hostapd_channel_data *chan)
+{
+	if (dl_list_empty(&chan->survey_list))
+		return 0;
+	if (chan->flag & HOSTAPD_CHAN_DISABLED)
+		return 0;
+	if (!acs_survey_list_is_sufficient(chan))
+		return 0;
 	return 1;
 }
 
@@ -456,7 +487,7 @@ static struct hostapd_channel_data *acs_find_chan(struct hostapd_iface *iface,
 	for (i = 0; i < iface->current_mode->num_channels; i++) {
 		chan = &iface->current_mode->channels[i];
 
-		if (!acs_usable_chan(chan))
+		if (chan->flag & HOSTAPD_CHAN_DISABLED)
 			continue;
 
 		if (chan->freq == freq)
@@ -476,7 +507,8 @@ static struct hostapd_channel_data *acs_find_chan(struct hostapd_iface *iface,
 static struct hostapd_channel_data *
 acs_find_ideal_chan(struct hostapd_iface *iface)
 {
-	struct hostapd_channel_data *chan, *adj_chan, *ideal_chan = NULL;
+	struct hostapd_channel_data *chan, *adj_chan, *ideal_chan = NULL,
+		*rand_chan = NULL;
 	long double factor, ideal_factor = 0;
 	int i, j;
 	int n_chans = 1;
@@ -508,8 +540,9 @@ acs_find_ideal_chan(struct hostapd_iface *iface)
 	for (i = 0; i < iface->current_mode->num_channels; i++) {
 		chan = &iface->current_mode->channels[i];
 
-		if (!acs_usable_chan(chan))
+		if (chan->flag & HOSTAPD_CHAN_DISABLED)
 			continue;
+
 
 		/* HT40 on 5 GHz has a limited set of primary channels as per
 		 * 11n Annex J */
@@ -522,14 +555,26 @@ acs_find_ideal_chan(struct hostapd_iface *iface)
 			continue;
 		}
 
-		factor = chan->interference_factor;
+		if (iface->current_mode->mode == HOSTAPD_MODE_IEEE80211A &&
+		    iface->conf->ieee80211ac &&
+		    iface->conf->vht_oper_chwidth == 1 &&
+		    !acs_usable_vht80_chan(chan)) {
+			wpa_printf(MSG_DEBUG, "ACS: Channel %d: not allowed as primary channel for VHT80",
+				   chan->chan);
+			continue;
+		}
+
+		factor = 0;
+		if (acs_usable_chan(chan))
+			factor = chan->interference_factor;
 
 		for (j = 1; j < n_chans; j++) {
 			adj_chan = acs_find_chan(iface, chan->freq + (j * 20));
 			if (!adj_chan)
 				break;
 
-			factor += adj_chan->interference_factor;
+			if (acs_usable_chan(adj_chan))
+				factor += adj_chan->interference_factor;
 		}
 
 		if (j != n_chans) {
@@ -548,22 +593,22 @@ acs_find_ideal_chan(struct hostapd_iface *iface)
 
 				adj_chan = acs_find_chan(iface, chan->freq +
 							 (j * 20) - 5);
-				if (adj_chan)
+				if (adj_chan && acs_usable_chan(adj_chan))
 					factor += adj_chan->interference_factor;
 
 				adj_chan = acs_find_chan(iface, chan->freq +
 							 (j * 20) - 10);
-				if (adj_chan)
+				if (adj_chan && acs_usable_chan(adj_chan))
 					factor += adj_chan->interference_factor;
 
 				adj_chan = acs_find_chan(iface, chan->freq +
 							 (j * 20) + 5);
-				if (adj_chan)
+				if (adj_chan && acs_usable_chan(adj_chan))
 					factor += adj_chan->interference_factor;
 
 				adj_chan = acs_find_chan(iface, chan->freq +
 							 (j * 20) + 10);
-				if (adj_chan)
+				if (adj_chan && acs_usable_chan(adj_chan))
 					factor += adj_chan->interference_factor;
 			}
 		}
@@ -571,39 +616,49 @@ acs_find_ideal_chan(struct hostapd_iface *iface)
 		wpa_printf(MSG_DEBUG, "ACS:  * channel %d: total interference = %Lg",
 			   chan->chan, factor);
 
-		if (!ideal_chan || factor < ideal_factor) {
+		if (acs_usable_chan(chan) &&
+		    (!ideal_chan || factor < ideal_factor)) {
 			ideal_factor = factor;
 			ideal_chan = chan;
 		}
+
+		/* This channel would at least be usable */
+		if (!rand_chan)
+			rand_chan = chan;
 	}
 
-	if (ideal_chan)
+	if (ideal_chan) {
 		wpa_printf(MSG_DEBUG, "ACS: Ideal channel is %d (%d MHz) with total interference factor of %Lg",
 			   ideal_chan->chan, ideal_chan->freq, ideal_factor);
+		return ideal_chan;
+	}
 
-	return ideal_chan;
+	return rand_chan;
 }
 
 
 static void acs_adjust_vht_center_freq(struct hostapd_iface *iface)
 {
+	int offset;
+
 	wpa_printf(MSG_DEBUG, "ACS: Adjusting VHT center frequency");
 
 	switch (iface->conf->vht_oper_chwidth) {
 	case VHT_CHANWIDTH_USE_HT:
-		iface->conf->vht_oper_centr_freq_seg0_idx =
-			iface->conf->channel + 2;
+		offset = 2 * iface->conf->secondary_channel;
 		break;
 	case VHT_CHANWIDTH_80MHZ:
-		iface->conf->vht_oper_centr_freq_seg0_idx =
-			iface->conf->channel + 6;
+		offset = 6;
 		break;
 	default:
 		/* TODO: How can this be calculated? Adjust
 		 * acs_find_ideal_chan() */
 		wpa_printf(MSG_INFO, "ACS: Only VHT20/40/80 is supported now");
-		break;
+		return;
 	}
+
+	iface->conf->vht_oper_centr_freq_seg0_idx =
+		iface->conf->channel + offset;
 }
 
 
@@ -655,6 +710,7 @@ static void acs_study(struct hostapd_iface *iface)
 	ideal_chan = acs_find_ideal_chan(iface);
 	if (!ideal_chan) {
 		wpa_printf(MSG_ERROR, "ACS: Failed to compute ideal channel");
+		err = -1;
 		goto fail;
 	}
 
@@ -663,24 +719,20 @@ static void acs_study(struct hostapd_iface *iface)
 	if (iface->conf->ieee80211ac)
 		acs_adjust_vht_center_freq(iface);
 
+	err = 0;
+fail:
 	/*
 	 * hostapd_setup_interface_complete() will return -1 on failure,
 	 * 0 on success and 0 is HOSTAPD_CHAN_VALID :)
 	 */
-	switch (hostapd_acs_completed(iface)) {
-	case HOSTAPD_CHAN_VALID:
+	if (hostapd_acs_completed(iface, err) == HOSTAPD_CHAN_VALID) {
 		acs_cleanup(iface);
 		return;
-	case HOSTAPD_CHAN_INVALID:
-	case HOSTAPD_CHAN_ACS:
-	default:
-		/* This can possibly happen if channel parameters (secondary
-		 * channel, center frequencies) are misconfigured */
-		wpa_printf(MSG_ERROR, "ACS: Possibly channel configuration is invalid, please report this along with your config file.");
-		goto fail;
 	}
 
-fail:
+	/* This can possibly happen if channel parameters (secondary
+	 * channel, center frequencies) are misconfigured */
+	wpa_printf(MSG_ERROR, "ACS: Possibly channel configuration is invalid, please report this along with your config file.");
 	acs_fail(iface);
 }
 
@@ -697,21 +749,24 @@ static void acs_scan_complete(struct hostapd_iface *iface)
 	err = hostapd_drv_get_survey(iface->bss[0], 0);
 	if (err) {
 		wpa_printf(MSG_ERROR, "ACS: Failed to get survey data");
-		acs_fail(iface);
+		goto fail;
 	}
 
 	if (++iface->acs_num_completed_scans < iface->conf->acs_num_scans) {
 		err = acs_request_scan(iface);
 		if (err) {
 			wpa_printf(MSG_ERROR, "ACS: Failed to request scan");
-			acs_fail(iface);
-			return;
+			goto fail;
 		}
 
 		return;
 	}
 
 	acs_study(iface);
+	return;
+fail:
+	hostapd_acs_completed(iface, 1);
+	acs_fail(iface);
 }
 
 
@@ -746,6 +801,7 @@ static int acs_request_scan(struct hostapd_iface *iface)
 	if (hostapd_driver_scan(iface->bss[0], &params) < 0) {
 		wpa_printf(MSG_ERROR, "ACS: Failed to request initial scan");
 		acs_cleanup(iface);
+		os_free(params.freqs);
 		return -1;
 	}
 
@@ -765,6 +821,9 @@ enum hostapd_chan_status acs_init(struct hostapd_iface *iface)
 	err = acs_request_scan(iface);
 	if (err < 0)
 		return HOSTAPD_CHAN_INVALID;
+
+	hostapd_set_state(iface, HAPD_IFACE_ACS);
+	wpa_msg(iface->bss[0]->msg_ctx, MSG_INFO, ACS_EVENT_STARTED);
 
 	return HOSTAPD_CHAN_ACS;
 }
