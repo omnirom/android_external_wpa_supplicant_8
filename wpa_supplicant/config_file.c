@@ -663,6 +663,10 @@ static void wpa_config_write_network(FILE *f, struct wpa_ssid *ssid)
 	STR(client_cert);
 	STR(private_key);
 	STR(private_key_passwd);
+#ifdef CONFIG_RILD_FUNCS
+	STR(sim_slot);
+	STR(imsi);
+#endif
 	STR(dh_file);
 	STR(subject_match);
 	STR(altsubject_match);

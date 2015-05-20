@@ -263,7 +263,11 @@ int os_program_init(void)
 #ifdef ANDROID_SETGROUPS_OVERRIDE
 	gid_t groups[] = { ANDROID_SETGROUPS_OVERRIDE };
 #else /* ANDROID_SETGROUPS_OVERRIDE */
+#ifdef CONFIG_RILD_FUNCS /* add me into system group, to get permission for rild-oem socket accessing */
+	gid_t groups[] = { AID_INET, AID_WIFI, AID_KEYSTORE, AID_SYSTEM };
+#else
 	gid_t groups[] = { AID_INET, AID_WIFI, AID_KEYSTORE };
+#endif
 #endif /* ANDROID_SETGROUPS_OVERRIDE */
 	struct __user_cap_header_struct header;
 	struct __user_cap_data_struct cap;

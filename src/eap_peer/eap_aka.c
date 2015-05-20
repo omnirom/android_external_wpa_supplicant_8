@@ -9,7 +9,6 @@
 #include "includes.h"
 
 #include "common.h"
-#include "pcsc_funcs.h"
 #include "crypto/crypto.h"
 #include "crypto/sha1.h"
 #include "crypto/sha256.h"
@@ -18,6 +17,11 @@
 #include "eap_config.h"
 #include "eap_i.h"
 
+#ifdef CONFIG_RILD_FUNCS
+#include "rild_funcs.h"
+#else
+#include "pcsc_funcs.h"
+#endif
 
 struct eap_aka_data {
 	u8 ik[EAP_AKA_IK_LEN], ck[EAP_AKA_CK_LEN], res[EAP_AKA_RES_MAX_LEN];
@@ -141,16 +145,47 @@ static void eap_aka_deinit(struct eap_sm *sm, void *priv)
 	}
 }
 
-
 static int eap_aka_umts_auth(struct eap_sm *sm, struct eap_aka_data *data)
 {
 	struct eap_peer_config *conf;
-
+#ifdef CONFIG_RILD_FUNCS
+	int slotId = -1;
+#endif
 	wpa_printf(MSG_DEBUG, "EAP-AKA: UMTS authentication algorithm");
 
 	conf = eap_get_config(sm);
 	if (conf == NULL)
 		return -1;
+#ifdef CONFIG_RILD_FUNCS
+	slotId = conf->sim_slot==NULL ? -1:atoi((const char*)conf->sim_slot);
+	/* slotId < 0 means to use software sim simulator,
+		certification lab test need it to do eap-sim/aka test */
+	if (slotId < 0) {
+		u8 opc[16];
+		u8 k[16];
+		u8 sqn[6];
+		char passwd[100] = {0};
+		getSoftSimPassword(data->eap_method, passwd);
+		wpa_printf(MSG_DEBUG, "EAP-AKA: Use internal Milenage "
+			   "implementation for UMTS authentication");
+		if (os_strlen(passwd) < 78) {
+			wpa_printf(MSG_DEBUG, "EAP-AKA: invalid Milenage "
+				   "password");
+			return -1;
+		}
+		if (hexstr2bin(passwd, k, 16) || *(passwd+32)!=':'
+			|| hexstr2bin(passwd+32+1, opc, 16) || *(passwd+32+1+32)!=':'
+			|| hexstr2bin(passwd+32+1+32+1, sqn, 6))
+			return -1;
+
+		return milenage_check(opc, k, sqn, data->rand, data->autn,
+				      data->ik, data->ck,
+				      data->res, &data->res_len, data->auts);
+	}
+	return scard_umts_auth(slotId, data->rand,
+			       data->autn, data->res, &data->res_len,
+			       data->ik, data->ck, data->auts);
+#else /* CONFIG_RILD_FUNCS */
 	if (conf->pcsc) {
 		return scard_umts_auth(sm->scard_ctx, data->rand,
 				       data->autn, data->res, &data->res_len,
@@ -230,9 +265,8 @@ static int eap_aka_umts_auth(struct eap_sm *sm, struct eap_aka_data *data)
 	return -1;
 
 #endif /* CONFIG_USIM_HARDCODED */
+#endif /* CONFIG_RILD_FUNCS */
 }
-
-
 #define CLEAR_PSEUDONYM	0x01
 #define CLEAR_REAUTH_ID	0x02
 #define CLEAR_EAP_ID	0x04

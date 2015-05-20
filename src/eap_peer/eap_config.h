@@ -159,6 +159,12 @@ struct eap_peer_config {
 	 */
 	u8 *private_key_passwd;
 
+#ifdef CONFIG_RILD_FUNCS
+	u8 *imsi;
+	size_t imsi_len;
+	u8 *sim_slot;
+	size_t sim_slot_len;
+#endif
 	/**
 	 * dh_file - File path to DH/DSA parameters file (in PEM format)
 	 *

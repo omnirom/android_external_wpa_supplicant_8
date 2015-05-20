@@ -9,13 +9,17 @@
 #include "includes.h"
 
 #include "common.h"
-#include "pcsc_funcs.h"
 #include "crypto/milenage.h"
 #include "crypto/random.h"
 #include "eap_peer/eap_i.h"
 #include "eap_config.h"
 #include "eap_common/eap_sim_common.h"
 
+#ifdef CONFIG_RILD_FUNCS
+#include "rild_funcs.h"
+#else
+#include "pcsc_funcs.h"
+#endif
 
 struct eap_sim_data {
 	u8 *ver_list;
@@ -144,16 +148,63 @@ static void eap_sim_deinit(struct eap_sm *sm, void *priv)
 	}
 }
 
-
 static int eap_sim_gsm_auth(struct eap_sm *sm, struct eap_sim_data *data)
 {
 	struct eap_peer_config *conf;
-
+#ifdef CONFIG_RILD_FUNCS
+	int slotId = -1;
+#endif
 	wpa_printf(MSG_DEBUG, "EAP-SIM: GSM authentication algorithm");
 
 	conf = eap_get_config(sm);
 	if (conf == NULL)
 		return -1;
+#ifdef CONFIG_RILD_FUNCS
+	slotId = conf->sim_slot == NULL ? -1:atoi((const char*)conf->sim_slot);
+
+	/* slotId < 0 means to use software sim simulator,
+		certification lab test need it to do eap-sim/aka test*/
+	if (slotId < 0) {
+		u8 opc[16];
+		u8 k[16];
+		char passwd[100] = {0};
+		size_t i;
+		getSoftSimPassword(EAP_TYPE_SIM, passwd);
+		wpa_printf(MSG_DEBUG, "EAP-SIM: Use internal GSM-Milenage "
+			   "implementation for authentication");
+		if (hexstr2bin(passwd, k, 16) || *(passwd+32)!=':' || hexstr2bin(passwd+32+1, opc, 16))
+			return -1;
+
+		wpa_hexdump(MSG_DEBUG, "EAP-SIM, K",k,16);
+		wpa_hexdump(MSG_DEBUG, "EAP-SIM, opc",opc,16);
+		for (i = 0; i < data->num_chal; i++) {
+			if (gsm_milenage(opc, k, data->rand[i],
+					 data->sres[i], data->kc[i])) {
+				wpa_printf(MSG_DEBUG, "EAP-SIM: "
+					   "GSM-Milenage authentication "
+					   "could not be completed");
+				return -1;
+			}
+			wpa_hexdump(MSG_DEBUG, "EAP-SIM: RAND",
+					data->rand[i], GSM_RAND_LEN);
+			wpa_hexdump(MSG_DEBUG, "EAP-SIM: SRES",
+					data->sres[i], EAP_SIM_SRES_LEN);
+			wpa_hexdump(MSG_DEBUG, "EAP-SIM: Kc",
+					data->kc[i], EAP_SIM_KC_LEN);
+		}
+	} else if (scard_gsm_auth(slotId, data->rand[0],
+			   data->sres[0], data->kc[0]) ||
+		scard_gsm_auth(slotId, data->rand[1],
+			   data->sres[1], data->kc[1]) ||
+		(data->num_chal > 2 &&
+		 scard_gsm_auth(slotId, data->rand[2],
+				data->sres[2], data->kc[2]))) {
+		wpa_printf(MSG_DEBUG, "EAP-SIM: GSM SIM "
+			   "authentication could not be completed");
+		return -1;
+	}
+	return 0;
+#else /* CONFIG_RILD_FUNCS */
 	if (conf->pcsc) {
 		if (scard_gsm_auth(sm->scard_ctx, data->rand[0],
 				   data->sres[0], data->kc[0]) ||
@@ -254,8 +305,8 @@ static int eap_sim_gsm_auth(struct eap_sm *sm, struct eap_sim_data *data)
 	return -1;
 
 #endif /* CONFIG_SIM_HARDCODED */
+#endif /* CONFIG_RILD_FUNCS */
 }
-
 
 static int eap_sim_supported_ver(int version)
 {
