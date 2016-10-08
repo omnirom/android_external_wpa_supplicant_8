@@ -651,12 +651,6 @@ void wpa_supplicant_set_state(struct wpa_supplicant *wpa_s,
 		wpa_supplicant_state_txt(wpa_s->wpa_state),
 		wpa_supplicant_state_txt(state));
 
-#ifdef ANDROID_P2P
-	if(state == WPA_ASSOCIATED && wpa_s->current_ssid) {
-		wpa_s->current_ssid->assoc_retry = 0;
-	}
-#endif /* ANDROID_P2P */
-
 	if (state != WPA_SCANNING)
 		wpa_supplicant_notify_scanning(wpa_s, 0);
 
@@ -3066,7 +3060,8 @@ next_driver:
 #ifdef CONFIG_EAP_PROXY
 {
 	size_t len;
-	wpa_s->mnc_len = eap_proxy_get_imsi(wpa_s->imsi, &len);
+	wpa_s->mnc_len = eapol_sm_get_eap_proxy_imsi(wpa_s->eapol, wpa_s->imsi,
+						     &len);
 	if (wpa_s->mnc_len > 0) {
 		wpa_s->imsi[len] = '\0';
 		wpa_printf(MSG_DEBUG, "eap_proxy: IMSI %s (MNC length %d)",
