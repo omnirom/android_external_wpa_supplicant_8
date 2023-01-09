@@ -2476,7 +2476,7 @@ static void qca_nl80211_key_mgmt_auth(struct wpa_driver_nl80211_data *drv,
 #ifdef ANDROID_LIB_EVENT
 	wpa_driver_nl80211_driver_event(
 		drv, OUI_QCA, QCA_NL80211_VENDOR_SUBCMD_KEY_MGMT_ROAM_AUTH,
-		data, len);
+		(u8 *)data, len);
 #endif /* ANDROID_LIB_EVENT */
 #endif /* ANDROID */
 }
