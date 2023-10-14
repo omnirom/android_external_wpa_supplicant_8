@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "14aad089_3947ee87",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 2
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1002322
+      },
+      "writtenOn": "2023-10-14T11:49:17Z",
+      "side": 1,
+      "message": "fix \n\nexternal/wpa_supplicant_8/hostapd/src/drivers/driver_nl80211_event.c:2479:3: error: passing \u0027const u8 *\u0027 (aka \u0027const unsigned char *\u0027) to parameter of type \u0027u8 *\u0027 (aka \u0027unsigned char *\u0027) discards qualifiers [-Werror,-Wincompatible-pointer-types-discards-qualifiers]\n                data, len);\n                ^~~~\nexternal/wpa_supplicant_8/hostapd/src/drivers/driver_nl80211.h:332:13: note: passing argument to parameter \u0027data\u0027 here\n                                           u8 *data, size_t len);\n                                               ^",
+      "revId": "0cf37cc42e2c1031ee20621d7f45f726a3e90414",
+      "serverId": "56841c99-7c94-43d4-bf0b-cb4707e66d55"
+    }
+  ]
+}
