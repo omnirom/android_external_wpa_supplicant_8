@@ -17,6 +17,7 @@
 #include "common/ieee802_11_common.h"
 #include "common/hw_features_common.h"
 #include "common/wpa_ctrl.h"
+#include "crypto/sha1.h"
 #include "wps/wps_defs.h"
 #include "p2p/p2p.h"
 #include "hostapd.h"
@@ -87,6 +88,12 @@ static u8 ieee802_11_erp_info(struct hostapd_data *hapd)
 
 static u8 * hostapd_eid_ds_params(struct hostapd_data *hapd, u8 *eid)
 {
+	enum hostapd_hw_mode hw_mode = hapd->iconf->hw_mode;
+
+	if (hw_mode != HOSTAPD_MODE_IEEE80211G &&
+	    hw_mode != HOSTAPD_MODE_IEEE80211B)
+		return eid;
+
 	*eid++ = WLAN_EID_DS_PARAMS;
 	*eid++ = 1;
 	*eid++ = hapd->iconf->channel;
@@ -471,12 +478,21 @@ ieee802_11_build_ap_params_mbssid(struct hostapd_data *hapd,
 	size_t len, rnr_len = 0;
 	u8 elem_count = 0, *elem = NULL, **elem_offset = NULL, *end;
 	u8 rnr_elem_count = 0, *rnr_elem = NULL, **rnr_elem_offset = NULL;
+	size_t i;
 
 	if (!iface->mbssid_max_interfaces ||
 	    iface->num_bss > iface->mbssid_max_interfaces ||
 	    (iface->conf->mbssid == ENHANCED_MBSSID_ENABLED &&
 	     !iface->ema_max_periodicity))
 		goto fail;
+
+	/* Make sure bss->xrates_supported is set for all BSSs to know whether
+	 * it need to be non-inherited. */
+	for (i = 0; i < iface->num_bss; i++) {
+		u8 buf[100];
+
+		hostapd_eid_ext_supp_rates(iface->bss[i], buf);
+	}
 
 	tx_bss = hostapd_mbssid_get_tx_bss(hapd);
 	len = hostapd_eid_mbssid_len(tx_bss, WLAN_FC_STYPE_BEACON, &elem_count,
@@ -605,6 +621,14 @@ static u8 * hostapd_gen_probe_resp(struct hostapd_data *hapd,
 		buflen += 3 + sizeof(struct ieee80211_eht_operation);
 		if (hapd->iconf->punct_bitmap)
 			buflen += EHT_OPER_DISABLED_SUBCHAN_BITMAP_SIZE;
+
+		/*
+		 * TODO: Multi-Link element has variable length and can be
+		 * long based on the common info and number of per
+		 * station profiles. For now use 256.
+		 */
+		if (hapd->conf->mld_ap)
+			buflen += 256;
 	}
 #endif /* CONFIG_IEEE80211BE */
 
@@ -755,6 +779,8 @@ static u8 * hostapd_gen_probe_resp(struct hostapd_data *hapd,
 
 #ifdef CONFIG_IEEE80211BE
 	if (hapd->iconf->ieee80211be && !hapd->conf->disable_11be) {
+		if (hapd->conf->mld_ap)
+			pos = hostapd_eid_eht_basic_ml(hapd, pos, NULL, true);
 		pos = hostapd_eid_eht_capab(hapd, pos, IEEE80211_MODE_AP);
 		pos = hostapd_eid_eht_operation(hapd, pos);
 	}
@@ -1365,10 +1391,128 @@ void sta_track_del(struct hostapd_sta_info *info)
 
 #ifdef CONFIG_FILS
 
+static u16 hostapd_gen_fils_discovery_phy_index(struct hostapd_data *hapd)
+{
+#ifdef CONFIG_IEEE80211BE
+	if (hapd->iconf->ieee80211be && !hapd->conf->disable_11be)
+		return FD_CAP_PHY_INDEX_EHT;
+#endif /* CONFIG_IEEE80211BE */
+
+#ifdef CONFIG_IEEE80211AX
+	if (hapd->iconf->ieee80211ax && !hapd->conf->disable_11ax)
+		return FD_CAP_PHY_INDEX_HE;
+#endif /* CONFIG_IEEE80211AX */
+
+#ifdef CONFIG_IEEE80211AC
+	if (hapd->iconf->ieee80211ac && !hapd->conf->disable_11ac)
+		return FD_CAP_PHY_INDEX_VHT;
+#endif /* CONFIG_IEEE80211AC */
+
+	if (hapd->iconf->ieee80211n && !hapd->conf->disable_11n)
+		return FD_CAP_PHY_INDEX_HT;
+
+	return 0;
+}
+
+
+static u16 hostapd_gen_fils_discovery_nss(struct hostapd_hw_modes *mode,
+					  u16 phy_index, u8 he_mcs_nss_size)
+{
+	u16 nss = 0;
+
+	if (!mode)
+		return 0;
+
+	if (phy_index == FD_CAP_PHY_INDEX_HE) {
+		const u8 *he_mcs = mode->he_capab[IEEE80211_MODE_AP].mcs;
+		int i;
+		u16 mcs[6];
+
+		os_memset(mcs, 0xff, 6 * sizeof(u16));
+
+		if (he_mcs_nss_size == 4) {
+			mcs[0] = WPA_GET_LE16(&he_mcs[0]);
+			mcs[1] = WPA_GET_LE16(&he_mcs[2]);
+		}
+
+		if (he_mcs_nss_size == 8) {
+			mcs[2] = WPA_GET_LE16(&he_mcs[4]);
+			mcs[3] = WPA_GET_LE16(&he_mcs[6]);
+		}
+
+		if (he_mcs_nss_size == 12) {
+			mcs[4] = WPA_GET_LE16(&he_mcs[8]);
+			mcs[5] = WPA_GET_LE16(&he_mcs[10]);
+		}
+
+		for (i = 0; i < HE_NSS_MAX_STREAMS; i++) {
+			u16 nss_mask = 0x3 << (i * 2);
+
+			/*
+			 * If Tx and/or Rx indicate support for a given NSS,
+			 * count it towards the maximum NSS.
+			 */
+			if (he_mcs_nss_size == 4 &&
+			    (((mcs[0] & nss_mask) != nss_mask) ||
+			     ((mcs[1] & nss_mask) != nss_mask))) {
+				nss++;
+				continue;
+			}
+
+			if (he_mcs_nss_size == 8 &&
+			    (((mcs[2] & nss_mask) != nss_mask) ||
+			     ((mcs[3] & nss_mask) != nss_mask))) {
+				nss++;
+				continue;
+			}
+
+			if (he_mcs_nss_size == 12 &&
+			    (((mcs[4] & nss_mask) != nss_mask) ||
+			     ((mcs[5] & nss_mask) != nss_mask))) {
+				nss++;
+				continue;
+			}
+		}
+	} else if (phy_index == FD_CAP_PHY_INDEX_EHT) {
+		u8 rx_nss, tx_nss, max_nss = 0, i;
+		u8 *mcs = mode->eht_capab[IEEE80211_MODE_AP].mcs;
+
+		/*
+		 * The Supported EHT-MCS And NSS Set field for the AP contains
+		 * one to three EHT-MCS Map fields based on the supported
+		 * bandwidth. Check the first byte (max NSS for Rx/Tx that
+		 * supports EHT-MCS 0-9) for each bandwidth (<= 80,
+		 * 160, 320) to find the maximum NSS. This assumes that
+		 * the lowest MCS rates support the largest number of spatial
+		 * streams. If values are different between Tx, Rx or the
+		 * bandwidths, choose the highest value.
+		 */
+		for (i = 0; i < 3; i++) {
+			rx_nss = mcs[3 * i] & 0x0F;
+			if (rx_nss > max_nss)
+				max_nss = rx_nss;
+
+			tx_nss = (mcs[3 * i] & 0xF0) >> 4;
+			if (tx_nss > max_nss)
+				max_nss = tx_nss;
+		}
+
+		nss = max_nss;
+	}
+
+	if (nss > 4)
+		return FD_CAP_NSS_5_8 << FD_CAP_NSS_SHIFT;
+	if (nss)
+		return (nss - 1) << FD_CAP_NSS_SHIFT;
+
+	return 0;
+}
+
+
 static u16 hostapd_fils_discovery_cap(struct hostapd_data *hapd)
 {
-	u16 cap_info, phy_index = 0;
-	u8 chwidth = FD_CAP_BSS_CHWIDTH_20, mcs_nss_size = 4;
+	u16 cap_info, phy_index;
+	u8 chwidth = FD_CAP_BSS_CHWIDTH_20, he_mcs_nss_size = 4;
 	struct hostapd_hw_modes *mode = hapd->iface->current_mode;
 
 	cap_info = FD_CAP_ESS;
@@ -1376,17 +1520,15 @@ static u16 hostapd_fils_discovery_cap(struct hostapd_data *hapd)
 		cap_info |= FD_CAP_PRIVACY;
 
 	if (is_6ghz_op_class(hapd->iconf->op_class)) {
-		phy_index = FD_CAP_PHY_INDEX_HE;
-
 		switch (hapd->iconf->op_class) {
 		case 137:
 			chwidth = FD_CAP_BSS_CHWIDTH_320;
 			break;
 		case 135:
-			mcs_nss_size += 4;
+			he_mcs_nss_size += 4;
 			/* fallthrough */
 		case 134:
-			mcs_nss_size += 4;
+			he_mcs_nss_size += 4;
 			chwidth = FD_CAP_BSS_CHWIDTH_160_80_80;
 			break;
 		case 133:
@@ -1399,10 +1541,10 @@ static u16 hostapd_fils_discovery_cap(struct hostapd_data *hapd)
 	} else {
 		switch (hostapd_get_oper_chwidth(hapd->iconf)) {
 		case CONF_OPER_CHWIDTH_80P80MHZ:
-			mcs_nss_size += 4;
+			he_mcs_nss_size += 4;
 			/* fallthrough */
 		case CONF_OPER_CHWIDTH_160MHZ:
-			mcs_nss_size += 4;
+			he_mcs_nss_size += 4;
 			chwidth = FD_CAP_BSS_CHWIDTH_160_80_80;
 			break;
 		case CONF_OPER_CHWIDTH_80MHZ:
@@ -1417,79 +1559,13 @@ static u16 hostapd_fils_discovery_cap(struct hostapd_data *hapd)
 		default:
 			break;
 		}
-
-#ifdef CONFIG_IEEE80211AX
-		if (hapd->iconf->ieee80211ax && !hapd->conf->disable_11ax)
-			phy_index = FD_CAP_PHY_INDEX_HE;
-#endif /* CONFIG_IEEE80211AX */
-#ifdef CONFIG_IEEE80211AC
-		if (!phy_index &&
-		    hapd->iconf->ieee80211ac && !hapd->conf->disable_11ac)
-			phy_index = FD_CAP_PHY_INDEX_VHT;
-#endif /* CONFIG_IEEE80211AC */
-		if (!phy_index &&
-		    hapd->iconf->ieee80211n && !hapd->conf->disable_11n)
-			phy_index = FD_CAP_PHY_INDEX_HT;
 	}
 
+	phy_index = hostapd_gen_fils_discovery_phy_index(hapd);
 	cap_info |= phy_index << FD_CAP_PHY_INDEX_SHIFT;
 	cap_info |= chwidth << FD_CAP_BSS_CHWIDTH_SHIFT;
-
-	if (mode && phy_index == FD_CAP_PHY_INDEX_HE) {
-		const u8 *he_mcs = mode->he_capab[IEEE80211_MODE_AP].mcs;
-		int i;
-		u16 nss = 0, mcs[6];
-
-		os_memset(mcs, 0xffff, 6 * sizeof(u16));
-
-		if (mcs_nss_size == 4) {
-			mcs[0] = WPA_GET_LE16(&he_mcs[0]);
-			mcs[1] = WPA_GET_LE16(&he_mcs[2]);
-		}
-
-		if (mcs_nss_size == 8) {
-			mcs[2] = WPA_GET_LE16(&he_mcs[4]);
-			mcs[3] = WPA_GET_LE16(&he_mcs[6]);
-		}
-
-		if (mcs_nss_size == 12) {
-			mcs[4] = WPA_GET_LE16(&he_mcs[8]);
-			mcs[5] = WPA_GET_LE16(&he_mcs[10]);
-		}
-
-		for (i = 0; i < HE_NSS_MAX_STREAMS; i++) {
-			u16 nss_mask = 0x3 << (i * 2);
-
-			/*
-			 * If NSS values supported by RX and TX are different
-			 * then choose the smaller of the two as the maximum
-			 * supported NSS as that is the value supported by
-			 * both RX and TX.
-			 */
-			if (mcs_nss_size == 4 &&
-			    (((mcs[0] & nss_mask) == nss_mask) ||
-			     ((mcs[1] & nss_mask) == nss_mask)))
-				continue;
-
-			if (mcs_nss_size == 8 &&
-			    (((mcs[2] & nss_mask) == nss_mask) ||
-			     ((mcs[3] & nss_mask) == nss_mask)))
-				continue;
-
-			if (mcs_nss_size == 12 &&
-			    (((mcs[4] & nss_mask) == nss_mask) ||
-			     ((mcs[5] & nss_mask) == nss_mask)))
-				continue;
-
-			nss++;
-		}
-
-		if (nss > 4)
-			cap_info |= FD_CAP_NSS_5_8 << FD_CAP_NSS_SHIFT;
-		else if (nss)
-			cap_info |= (nss - 1) << FD_CAP_NSS_SHIFT;
-	}
-
+	cap_info |= hostapd_gen_fils_discovery_nss(mode, phy_index,
+						   he_mcs_nss_size);
 	return cap_info;
 }
 
@@ -1711,6 +1787,14 @@ int ieee802_11_build_ap_params(struct hostapd_data *hapd,
 		tail_len += 3 + sizeof(struct ieee80211_eht_operation);
 		if (hapd->iconf->punct_bitmap)
 			tail_len += EHT_OPER_DISABLED_SUBCHAN_BITMAP_SIZE;
+
+		/*
+		 * TODO: Multi-Link element has variable length and can be
+		 * long based on the common info and number of per
+		 * station profiles. For now use 256.
+		 */
+		if (hapd->conf->mld_ap)
+			tail_len += 256;
 	}
 #endif /* CONFIG_IEEE80211BE */
 
@@ -1881,6 +1965,9 @@ int ieee802_11_build_ap_params(struct hostapd_data *hapd,
 
 #ifdef CONFIG_IEEE80211BE
 	if (hapd->iconf->ieee80211be && !hapd->conf->disable_11be) {
+		if (hapd->conf->mld_ap)
+			tailpos = hostapd_eid_eht_basic_ml(hapd, tailpos, NULL,
+							   true);
 		tailpos = hostapd_eid_eht_capab(hapd, tailpos,
 						IEEE80211_MODE_AP);
 		tailpos = hostapd_eid_eht_operation(hapd, tailpos);
@@ -1939,6 +2026,50 @@ int ieee802_11_build_ap_params(struct hostapd_data *hapd,
 
 	resp = hostapd_probe_resp_offloads(hapd, &resp_len);
 #endif /* NEED_AP_MLME */
+
+	/* If key management offload is enabled, configure PSK to the driver. */
+	if (wpa_key_mgmt_wpa_psk_no_sae(hapd->conf->wpa_key_mgmt) &&
+	    (hapd->iface->drv_flags2 &
+	     WPA_DRIVER_FLAGS2_4WAY_HANDSHAKE_AP_PSK)) {
+		if (hapd->conf->ssid.wpa_psk && hapd->conf->ssid.wpa_psk_set) {
+			os_memcpy(params->psk, hapd->conf->ssid.wpa_psk->psk,
+				  PMK_LEN);
+			params->psk_len = PMK_LEN;
+		} else if (hapd->conf->ssid.wpa_passphrase &&
+			   pbkdf2_sha1(hapd->conf->ssid.wpa_passphrase,
+				       hapd->conf->ssid.ssid,
+				       hapd->conf->ssid.ssid_len, 4096,
+				       params->psk, PMK_LEN) == 0) {
+			params->psk_len = PMK_LEN;
+		}
+	}
+
+#ifdef CONFIG_SAE
+	/* If SAE offload is enabled, provide password to lower layer for
+	 * SAE authentication and PMK generation.
+	 */
+	if (wpa_key_mgmt_sae(hapd->conf->wpa_key_mgmt) &&
+	    (hapd->iface->drv_flags2 & WPA_DRIVER_FLAGS2_SAE_OFFLOAD_AP)) {
+		if (hostapd_sae_pk_in_use(hapd->conf)) {
+			wpa_printf(MSG_ERROR,
+				   "SAE PK not supported with SAE offload");
+			return -1;
+		}
+
+		if (hostapd_sae_pw_id_in_use(hapd->conf)) {
+			wpa_printf(MSG_ERROR,
+				   "SAE Password Identifiers not supported with SAE offload");
+			return -1;
+		}
+
+		params->sae_password = sae_get_password(hapd, NULL, NULL, NULL,
+							NULL, NULL);
+		if (!params->sae_password) {
+			wpa_printf(MSG_ERROR, "SAE password not configured for offload");
+			return -1;
+		}
+	}
+#endif /* CONFIG_SAE */
 
 	params->head = (u8 *) head;
 	params->head_len = head_len;
@@ -2029,6 +2160,14 @@ int ieee802_11_build_ap_params(struct hostapd_data *hapd,
 				   "Not configuring FTM responder as the driver doesn't advertise support for it");
 		}
 	}
+
+#ifdef CONFIG_IEEE80211BE
+	if (hapd->conf->mld_ap && hapd->iconf->ieee80211be &&
+	    !hapd->conf->disable_11be) {
+		params->mld_ap = true;
+		params->mld_link_id = hapd->mld_link_id;
+	}
+#endif /* CONFIG_IEEE80211BE */
 
 	return 0;
 }
@@ -2172,6 +2311,12 @@ fail:
 }
 
 
+void ieee802_11_set_beacon_per_bss_only(struct hostapd_data *hapd)
+{
+	__ieee802_11_set_beacon(hapd);
+}
+
+
 int ieee802_11_set_beacon(struct hostapd_data *hapd)
 {
 	struct hostapd_iface *iface = hapd->iface;
@@ -2186,21 +2331,29 @@ int ieee802_11_set_beacon(struct hostapd_data *hapd)
 	if (!iface->interfaces || iface->interfaces->count <= 1)
 		return 0;
 
-	/* Update Beacon frames in case of 6 GHz colocation */
+	/* Update Beacon frames in case of 6 GHz colocation or AP MLD */
 	is_6g = is_6ghz_op_class(iface->conf->op_class);
 	for (j = 0; j < iface->interfaces->count; j++) {
-		struct hostapd_iface *colocated;
+		struct hostapd_iface *other;
+		bool mld_ap = false;
 
-		colocated = iface->interfaces->iface[j];
-		if (colocated == iface || !colocated || !colocated->conf)
+		other = iface->interfaces->iface[j];
+		if (other == iface || !other || !other->conf)
 			continue;
 
-		if (is_6g == is_6ghz_op_class(colocated->conf->op_class))
+#ifdef CONFIG_IEEE80211BE
+		if (hapd->conf->mld_ap && other->bss[0]->conf->mld_ap &&
+		    hapd->conf->mld_id == other->bss[0]->conf->mld_id)
+			mld_ap = true;
+#endif /* CONFIG_IEEE80211BE */
+
+		if (is_6g == is_6ghz_op_class(other->conf->op_class) &&
+		    !mld_ap)
 			continue;
 
-		for (i = 0; i < colocated->num_bss; i++) {
-			if (colocated->bss[i] && colocated->bss[i]->started)
-				__ieee802_11_set_beacon(colocated->bss[i]);
+		for (i = 0; i < other->num_bss; i++) {
+			if (other->bss[i] && other->bss[i]->started)
+				__ieee802_11_set_beacon(other->bss[i]);
 		}
 	}
 

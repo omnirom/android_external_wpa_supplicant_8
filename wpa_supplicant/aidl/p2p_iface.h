@@ -178,6 +178,13 @@ public:
 	::ndk::ScopedAStatus connectWithParams(
 		const P2pConnectInfo& in_connectInfo, std::string* _aidl_return) override;
 	::ndk::ScopedAStatus findWithParams(const P2pDiscoveryInfo& in_discoveryInfo) override;
+	::ndk::ScopedAStatus configureExtListenWithParams(
+		const P2pExtListenInfo& in_extListenInfo) override;
+	::ndk::ScopedAStatus addGroupWithConfigurationParams(
+		const P2pAddGroupConfigurationParams& in_groupConfigurationParams) override;
+	::ndk::ScopedAStatus createGroupOwner(
+		const P2pCreateGroupOwnerInfo& in_groupOwnerInfo) override;
+
 
 private:
 	// Corresponding worker functions for the AIDL methods.
@@ -304,6 +311,11 @@ private:
 	std::pair<std::string, ndk::ScopedAStatus> connectWithParamsInternal(
 		const P2pConnectInfo& connectInfo);
 	ndk::ScopedAStatus findWithParamsInternal(const P2pDiscoveryInfo& discoveryInfo);
+	ndk::ScopedAStatus configureExtListenWithParamsInternal(const P2pExtListenInfo& extListenInfo);
+	ndk::ScopedAStatus addGroupWithConfigurationParamsInternal(
+		const P2pAddGroupConfigurationParams& groupConfigurationParams);
+	ndk::ScopedAStatus createGroupOwnerInternal(
+		const P2pCreateGroupOwnerInfo& groupOwnerInfo);
 
 	struct wpa_supplicant* retrieveIfacePtr();
 	struct wpa_supplicant* retrieveGroupIfacePtr(

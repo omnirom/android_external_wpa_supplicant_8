@@ -171,6 +171,8 @@ public:
 				       enum mlo_info_change_reason reason);
 
 	// Methods called from aidl objects.
+	int32_t isAidlServiceVersionAtLeast(int32_t expected_version);
+	int32_t isAidlClientVersionAtLeast(int32_t expected_version);
 	void notifyExtRadioWorkStart(struct wpa_supplicant *wpa_s, uint32_t id);
 	void notifyExtRadioWorkTimeout(
 		struct wpa_supplicant *wpa_s, uint32_t id);

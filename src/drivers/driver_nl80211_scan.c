@@ -41,7 +41,7 @@ static int get_noise_for_scan_results(struct nl_msg *msg, void *arg)
 	struct nl80211_noise_info *info = arg;
 
 	if (info->count >= MAX_NL80211_NOISE_FREQS)
-		return NL_STOP;
+		return NL_SKIP;
 
 	nla_parse(tb, NL80211_ATTR_MAX, genlmsg_attrdata(gnlh, 0),
 		  genlmsg_attrlen(gnlh, 0), NULL);
@@ -315,6 +315,14 @@ nl80211_scan_common(struct i802_bss *bss, u8 cmd,
 			NL80211_SCAN_FLAG_OCE_PROBE_REQ_DEFERRAL_SUPPRESSION;
 	}
 
+	if (params->min_probe_req_content) {
+		if (drv->capa.flags2 & WPA_DRIVER_FLAGS2_SCAN_MIN_PREQ)
+			scan_flags |= NL80211_SCAN_FLAG_MIN_PREQ_CONTENT;
+		else
+			wpa_printf(MSG_DEBUG,
+				   "nl80211: NL80211_SCAN_FLAG_MIN_PREQ_CONTENT not supported");
+	}
+
 	if (scan_flags &&
 	    nla_put_u32(msg, NL80211_ATTR_SCAN_FLAGS, scan_flags))
 		goto fail;
@@ -377,7 +385,15 @@ int wpa_driver_nl80211_scan(struct i802_bss *bss,
 	if (params->bssid) {
 		wpa_printf(MSG_DEBUG, "nl80211: Scan for a specific BSSID: "
 			   MACSTR, MAC2STR(params->bssid));
-		if (nla_put(msg, NL80211_ATTR_MAC, ETH_ALEN, params->bssid))
+		if (nla_put(msg, NL80211_ATTR_BSSID, ETH_ALEN, params->bssid))
+			goto fail;
+		/* NL80211_ATTR_MAC was used for this purpose initially and the
+		 * NL80211_ATTR_BSSID was added in 2016 when MAC address
+		 * randomization was added. For compatibility with older kernel
+		 * versions, add the NL80211_ATTR_MAC attribute as well when
+		 * the conflicting functionality is not in use. */
+		if (!params->mac_addr_rand &&
+		    nla_put(msg, NL80211_ATTR_MAC, ETH_ALEN, params->bssid))
 			goto fail;
 	}
 

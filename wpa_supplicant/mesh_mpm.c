@@ -16,6 +16,7 @@
 #include "ap/hostapd.h"
 #include "ap/sta_info.h"
 #include "ap/ieee802_11.h"
+#include "ap/beacon.h"
 #include "ap/wpa_auth.h"
 #include "wpa_supplicant_i.h"
 #include "driver_i.h"
@@ -561,8 +562,11 @@ static int mesh_mpm_plink_close(struct hostapd_data *hapd, struct sta_info *sta,
 	int reason = WLAN_REASON_MESH_PEERING_CANCELLED;
 
 	if (sta) {
-		if (sta->plink_state == PLINK_ESTAB)
+		if (sta->plink_state == PLINK_ESTAB) {
 			hapd->num_plinks--;
+			wpas_notify_mesh_peer_disconnected(
+				wpa_s, sta->addr, WLAN_REASON_UNSPECIFIED);
+		}
 		wpa_mesh_set_plink_state(wpa_s, sta, PLINK_HOLDING);
 		mesh_mpm_send_plink_action(wpa_s, sta, PLINK_CLOSE, reason);
 		wpa_printf(MSG_DEBUG, "MPM closing plink sta=" MACSTR,
@@ -766,7 +770,8 @@ static struct sta_info * mesh_mpm_add_peer(struct wpa_supplicant *wpa_s,
 		set_disable_ht40(sta->ht_capabilities, 1);
 	}
 
-	update_ht_state(data, sta);
+	if (update_ht_state(data, sta) > 0)
+		ieee802_11_update_beacons(data->iface);
 
 #ifdef CONFIG_IEEE80211AC
 	copy_sta_vht_capab(data, sta, elems->vht_capabilities);
@@ -951,11 +956,6 @@ static void mesh_mpm_plink_estab(struct wpa_supplicant *wpa_s,
 	peer_add_timer(wpa_s, NULL);
 	eloop_cancel_timeout(plink_timer, wpa_s, sta);
 
-	/* Send ctrl event */
-	wpa_msg(wpa_s, MSG_INFO, MESH_PEER_CONNECTED MACSTR,
-		MAC2STR(sta->addr));
-
-	/* Send D-Bus event */
 	wpas_notify_mesh_peer_connected(wpa_s, sta->addr);
 }
 
@@ -1106,10 +1106,6 @@ static void mesh_mpm_fsm(struct wpa_supplicant *wpa_s, struct sta_info *sta,
 				" closed with reason %d",
 				MAC2STR(sta->addr), reason);
 
-			wpa_msg(wpa_s, MSG_INFO, MESH_PEER_DISCONNECTED MACSTR,
-				MAC2STR(sta->addr));
-
-			/* Send D-Bus event */
 			wpas_notify_mesh_peer_disconnected(wpa_s, sta->addr,
 							   reason);
 
@@ -1428,8 +1424,13 @@ void mesh_mpm_action_rx(struct wpa_supplicant *wpa_s,
 /* called by ap_free_sta */
 void mesh_mpm_free_sta(struct hostapd_data *hapd, struct sta_info *sta)
 {
-	if (sta->plink_state == PLINK_ESTAB)
+	struct wpa_supplicant *wpa_s = hapd->iface->owner;
+
+	if (sta->plink_state == PLINK_ESTAB) {
 		hapd->num_plinks--;
+		wpas_notify_mesh_peer_disconnected(
+			wpa_s, sta->addr, WLAN_REASON_UNSPECIFIED);
+	}
 	eloop_cancel_timeout(plink_timer, ELOOP_ALL_CTX, sta);
 	eloop_cancel_timeout(mesh_auth_timer, ELOOP_ALL_CTX, sta);
 }

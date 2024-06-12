@@ -19,6 +19,10 @@ struct ieee80211_mgmt;
 struct radius_sta;
 enum ieee80211_op_mode;
 enum oper_chan_width;
+struct ieee802_11_elems;
+struct sae_pk;
+struct sae_pt;
+struct sae_password_entry;
 
 int ieee802_11_mgmt(struct hostapd_data *hapd, const u8 *buf, size_t len,
 		    struct hostapd_frame_info *fi);
@@ -84,13 +88,22 @@ void hostapd_get_eht_capab(struct hostapd_data *hapd,
 			   const struct ieee80211_eht_capabilities *src,
 			   struct ieee80211_eht_capabilities *dest,
 			   size_t len);
+u8 * hostapd_eid_eht_basic_ml(struct hostapd_data *hapd, u8 *eid,
+			      struct sta_info *info, bool include_mld_id);
+struct wpabuf * hostapd_ml_auth_resp(struct hostapd_data *hapd);
+const u8 * hostapd_process_ml_auth(struct hostapd_data *hapd,
+				   const struct ieee80211_mgmt *mgmt,
+				   size_t len);
+u16 hostapd_process_ml_assoc_req(struct hostapd_data *hapd,
+				 struct ieee802_11_elems *elems,
+				 struct sta_info *sta);
 int hostapd_get_aid(struct hostapd_data *hapd, struct sta_info *sta);
 u16 copy_sta_ht_capab(struct hostapd_data *hapd, struct sta_info *sta,
 		      const u8 *ht_capab);
 u16 copy_sta_vendor_vht(struct hostapd_data *hapd, struct sta_info *sta,
 			const u8 *ie, size_t len);
 
-void update_ht_state(struct hostapd_data *hapd, struct sta_info *sta);
+int update_ht_state(struct hostapd_data *hapd, struct sta_info *sta);
 void ht40_intolerant_add(struct hostapd_iface *iface, struct sta_info *sta);
 void ht40_intolerant_remove(struct hostapd_iface *iface, struct sta_info *sta);
 u16 copy_sta_vht_capab(struct hostapd_data *hapd, struct sta_info *sta,
@@ -177,7 +190,8 @@ u8 * owe_assoc_req_process(struct hostapd_data *hapd, struct sta_info *sta,
 			   u8 *owe_buf, size_t owe_buf_len, u16 *status);
 u16 owe_process_rsn_ie(struct hostapd_data *hapd, struct sta_info *sta,
 		       const u8 *rsn_ie, size_t rsn_ie_len,
-		       const u8 *owe_dh, size_t owe_dh_len);
+		       const u8 *owe_dh, size_t owe_dh_len,
+		       const u8 *link_addr);
 u16 owe_validate_request(struct hostapd_data *hapd, const u8 *peer,
 			 const u8 *rsn_ie, size_t rsn_ie_len,
 			 const u8 *owe_dh, size_t owe_dh_len);
@@ -226,5 +240,10 @@ u8 * hostapd_eid_mbssid(struct hostapd_data *hapd, u8 *eid, u8 *end,
 			u8 *rnr_count, u8 **rnr_offset, size_t rnr_len);
 void punct_update_legacy_bw(u16 bitmap, u8 pri_chan,
 			    enum oper_chan_width *width, u8 *seg0, u8 *seg1);
+bool hostapd_is_mld_ap(struct hostapd_data *hapd);
+const char * sae_get_password(struct hostapd_data *hapd,
+			      struct sta_info *sta, const char *rx_id,
+			      struct sae_password_entry **pw_entry,
+			      struct sae_pt **s_pt, const struct sae_pk **s_pk);
 
 #endif /* IEEE802_11_H */

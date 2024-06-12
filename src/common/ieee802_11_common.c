@@ -429,6 +429,7 @@ static ParseRes __ieee802_11_parse_elems(const u8 *start, size_t len,
 	for_each_element(elem, start, len) {
 		u8 id = elem->id, elen = elem->datalen;
 		const u8 *pos = elem->data;
+		size_t *total_len = NULL;
 
 		if (id == WLAN_EID_FRAGMENT && elems->num_frag_elems > 0) {
 			elems->num_frag_elems--;
@@ -512,6 +513,8 @@ static ParseRes __ieee802_11_parse_elems(const u8 *start, size_t len,
 				break;
 			elems->ftie = pos;
 			elems->ftie_len = elen;
+			elems->fte_defrag_len = elen;
+			total_len = &elems->fte_defrag_len;
 			break;
 		case WLAN_EID_TIMEOUT_INTERVAL:
 			if (elen != 5)
@@ -657,6 +660,12 @@ static ParseRes __ieee802_11_parse_elems(const u8 *start, size_t len,
 				   id, elen);
 			break;
 		}
+
+		if (elen == 255 && total_len)
+			*total_len += ieee802_11_fragments_length(
+				elems, pos + elen,
+				(start + len) - (pos + elen));
+
 	}
 
 	if (!for_each_element_completed(elem, start, len)) {
@@ -2498,6 +2507,35 @@ const u8 * get_ie(const u8 *ies, size_t len, u8 eid)
 
 
 /**
+ * get_ie_nth - Fetch a specified information element from IEs buffer
+ * @ies: Information elements buffer
+ * @len: Information elements buffer length
+ * @eid: Information element identifier (WLAN_EID_*)
+ * @nth: Return the nth element of the requested type (2 returns the second)
+ * Returns: Pointer to the information element (id field) or %NULL if not found
+ *
+ * This function returns the nth matching information element in the IEs
+ * buffer or %NULL in case the element is not found.
+ */
+const u8 * get_ie_nth(const u8 *ies, size_t len, u8 eid, int nth)
+{
+	const struct element *elem;
+	int sofar = 0;
+
+	if (!ies)
+		return NULL;
+
+	for_each_element_id(elem, eid, ies, len) {
+		sofar++;
+		if (sofar == nth)
+			return &elem->id;
+	}
+
+	return NULL;
+}
+
+
+/**
  * get_ie_ext - Fetch a specified extended information element from IEs buffer
  * @ies: Information elements buffer
  * @len: Information elements buffer length
@@ -2964,7 +3002,7 @@ bool ieee802_11_rsnx_capab_len(const u8 *rsnxe, size_t rsnxe_len,
 	for (i = 0; i < flen; i++)
 		capabs |= rsnxe[i] << (8 * i);
 
-	return capabs & BIT(capab);
+	return !!(capabs & BIT(capab));
 }
 
 
@@ -3647,4 +3685,51 @@ struct wpabuf * ieee802_11_defrag_mle(struct ieee802_11_elems *elems, u8 type)
 	}
 
 	return ieee802_11_defrag_data(data, len, true);
+}
+
+
+unsigned int is_ap_t2lm_negotiation_supported(const u8 *mle, size_t mle_len)
+{
+	u16 ml_control;
+	u16 mld_capabilities;
+	size_t offset =
+		2 /* Multi Link Control */ +
+		1 /* Common Info Length field */ +
+		ETH_ALEN /* MLD MAC Address field */;
+
+	if(!mle || mle_len < offset)
+	    return 0;
+
+	ml_control = WPA_GET_LE16(mle);
+	wpa_printf(MSG_DEBUG, "%s: ML control field 0x%x", __func__, ml_control);
+
+	if (!(ml_control & BASIC_MULTI_LINK_CTRL_PRES_MLD_CAPA)) {
+	    wpa_printf(MSG_DEBUG, "MLD capabilities not present");
+	    return 0;
+	}
+
+	if (ml_control & BASIC_MULTI_LINK_CTRL_PRES_LINK_ID)
+	    offset++;
+
+	if (ml_control & BASIC_MULTI_LINK_CTRL_PRES_BSS_PARAM_CH_COUNT)
+	    offset++;
+
+	if (ml_control & BASIC_MULTI_LINK_CTRL_PRES_MSD_INFO)
+	    offset += 2;
+
+	if (ml_control & BASIC_MULTI_LINK_CTRL_PRES_EML_CAPA)
+	    offset += 2;
+
+	if (mle_len < (offset + 2)) {
+	    wpa_printf(MSG_ERROR, "Not suffcient length for MLD capabilities");
+	    return 0;
+	}
+
+	mld_capabilities = WPA_GET_LE16(mle + offset);
+	wpa_printf(MSG_DEBUG, "MLD capabilities 0x%x", mld_capabilities);
+	if(!(mld_capabilities &
+	     EHT_ML_MLD_CAPA_TID_TO_LINK_MAP_NEG_SUPP_MSK))
+	    return 0;
+
+	return 1;
 }

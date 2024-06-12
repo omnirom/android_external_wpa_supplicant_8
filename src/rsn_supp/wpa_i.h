@@ -222,6 +222,7 @@ struct wpa_sm {
 	struct wpa_sm_mlo mlo;
 
 	bool wmm_enabled;
+	bool driver_bss_selection;
 };
 
 
@@ -380,13 +381,13 @@ static inline int wpa_sm_send_tdls_mgmt(struct wpa_sm *sm, const u8 *dst,
 					u8 action_code, u8 dialog_token,
 					u16 status_code, u32 peer_capab,
 					int initiator, const u8 *buf,
-					size_t len)
+					size_t len, int link_id)
 {
 	if (sm->ctx->send_tdls_mgmt)
 		return sm->ctx->send_tdls_mgmt(sm->ctx->ctx, dst, action_code,
 					       dialog_token, status_code,
 					       peer_capab, initiator, buf,
-					       len);
+					       len, link_id);
 	return -1;
 }
 
@@ -410,7 +411,9 @@ wpa_sm_tdls_peer_addset(struct wpa_sm *sm, const u8 *addr, int add,
 			u8 qosinfo, int wmm, const u8 *ext_capab,
 			size_t ext_capab_len, const u8 *supp_channels,
 			size_t supp_channels_len, const u8 *supp_oper_classes,
-			size_t supp_oper_classes_len)
+			size_t supp_oper_classes_len,
+			const struct ieee80211_eht_capabilities *eht_capab,
+			size_t eht_capab_len, int mld_link_id)
 {
 	if (sm->ctx->tdls_peer_addset)
 		return sm->ctx->tdls_peer_addset(sm->ctx->ctx, addr, add,
@@ -423,7 +426,9 @@ wpa_sm_tdls_peer_addset(struct wpa_sm *sm, const u8 *addr, int add,
 						 supp_channels,
 						 supp_channels_len,
 						 supp_oper_classes,
-						 supp_oper_classes_len);
+						 supp_oper_classes_len,
+						 eht_capab, eht_capab_len,
+						 mld_link_id);
 	return -1;
 }
 

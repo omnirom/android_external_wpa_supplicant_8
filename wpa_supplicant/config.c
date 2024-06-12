@@ -793,6 +793,10 @@ static int wpa_config_parse_key_mgmt(const struct parse_data *data,
 			val |= WPA_KEY_MGMT_FT_IEEE8021X_SHA384;
 #endif /* CONFIG_SHA384 */
 #endif /* CONFIG_IEEE80211R */
+#ifdef CONFIG_SHA384
+		else if (os_strcmp(start, "WPA-EAP-SHA384") == 0)
+			val |= WPA_KEY_MGMT_IEEE8021X_SHA384;
+#endif /* CONFIG_SHA384 */
 		else if (os_strcmp(start, "WPA-PSK-SHA256") == 0)
 			val |= WPA_KEY_MGMT_PSK_SHA256;
 		else if (os_strcmp(start, "WPA-EAP-SHA256") == 0)
@@ -964,6 +968,18 @@ static char * wpa_config_write_key_mgmt(const struct parse_data *data,
 	}
 #endif /* CONFIG_SHA384 */
 #endif /* CONFIG_IEEE80211R */
+
+#ifdef CONFIG_SHA384
+	if (ssid->key_mgmt & WPA_KEY_MGMT_IEEE8021X_SHA384) {
+		ret = os_snprintf(pos, end - pos, "%sWPA-EAP-SHA384",
+				  pos == buf ? "" : " ");
+		if (os_snprintf_error(end - pos, ret)) {
+			end[-1] = '\0';
+			return buf;
+		}
+		pos += ret;
+	}
+#endif /* CONFIG_SHA384 */
 
 	if (ssid->key_mgmt & WPA_KEY_MGMT_PSK_SHA256) {
 		ret = os_snprintf(pos, end - pos, "%sWPA-PSK-SHA256",
@@ -3008,9 +3024,15 @@ void wpa_config_free(struct wpa_config *config)
 		wpabuf_free(config->wps_vendor_ext[i]);
 	os_free(config->ctrl_interface);
 	os_free(config->ctrl_interface_group);
+#ifndef CONFIG_OPENSC_ENGINE_PATH
 	os_free(config->opensc_engine_path);
+#endif /* CONFIG_OPENSC_ENGINE_PATH */
+#ifndef CONFIG_PKCS11_ENGINE_PATH
 	os_free(config->pkcs11_engine_path);
+#endif /* CONFIG_PKCS11_ENGINE_PATH */
+#ifndef CONFIG_PKCS11_MODULE_PATH
 	os_free(config->pkcs11_module_path);
+#endif /* CONFIG_PKCS11_MODULE_PATH */
 	os_free(config->openssl_ciphers);
 	os_free(config->pcsc_reader);
 	str_clear_free(config->pcsc_pin);
@@ -4933,6 +4955,7 @@ static int wpa_config_process_country(const struct global_parse_data *data,
 }
 
 
+#ifndef CONFIG_NO_LOAD_DYNAMIC_EAP
 static int wpa_config_process_load_dynamic_eap(
 	const struct global_parse_data *data, struct wpa_config *config,
 	int line, const char *so)
@@ -4951,6 +4974,7 @@ static int wpa_config_process_load_dynamic_eap(
 
 	return 0;
 }
+#endif /* CONFIG_NO_LOAD_DYNAMIC_EAP */
 
 
 #ifdef CONFIG_WPS
@@ -5331,9 +5355,15 @@ static const struct global_parse_data global_fields[] = {
 #endif /* CONFIG_MESH */
 	{ INT(disable_scan_offload), 0 },
 	{ INT(fast_reauth), 0 },
+#ifndef CONFIG_OPENSC_ENGINE_PATH
 	{ STR(opensc_engine_path), 0 },
+#endif /* CONFIG_OPENSC_ENGINE_PATH */
+#ifndef CONFIG_PKCS11_ENGINE_PATH
 	{ STR(pkcs11_engine_path), 0 },
+#endif /* CONFIG_PKCS11_ENGINE_PATH */
+#ifndef CONFIG_PKCS11_MODULE_PATH
 	{ STR(pkcs11_module_path), 0 },
+#endif /* CONFIG_PKCS11_MODULE_PATH */
 	{ STR(openssl_ciphers), 0 },
 	{ STR(pcsc_reader), 0 },
 	{ STR(pcsc_pin), 0 },
@@ -5345,7 +5375,9 @@ static const struct global_parse_data global_fields[] = {
 #ifndef CONFIG_NO_CONFIG_WRITE
 	{ INT(update_config), 0 },
 #endif /* CONFIG_NO_CONFIG_WRITE */
+#ifndef CONFIG_NO_LOAD_DYNAMIC_EAP
 	{ FUNC_NO_VAR(load_dynamic_eap), 0 },
+#endif /* CONFIG_NO_LOAD_DYNAMIC_EAP */
 #ifdef CONFIG_WPS
 	{ FUNC(uuid), CFG_CHANGED_UUID },
 	{ INT_RANGE(auto_uuid, 0, 1), 0 },
@@ -5632,6 +5664,7 @@ int wpa_config_process_global(struct wpa_config *config, char *pos, int line)
 					   line);
 				return -1;
 			}
+			return ret;
 		}
 
 		if (os_strncmp(pos, "wmm_ac_", 7) == 0) {

@@ -74,6 +74,7 @@ int aidl_psk_aes_unwrap(const u8 *kek, size_t kek_len, int n,
 	if (pskPlugin == NULL)
 		return -ENODEV;
 
+        n++;
 	n = n * 8;
 	if (n < 8)
 		return -ENODEV;

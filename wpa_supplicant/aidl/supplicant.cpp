@@ -20,37 +20,39 @@ namespace {
 
 // Pre-populated interface params for interfaces controlled by wpa_supplicant.
 // Note: This may differ for other OEM's. So, modify this accordingly.
+// When wpa_supplicant is in its APEX, overlay/template configurations should be
+// loaded from the same APEX.
 constexpr char kIfaceDriverName[] = "nl80211";
+
 constexpr char kStaIfaceConfPath[] =
 	"/data/vendor/wifi/wpa/wpa_supplicant.conf";
-static const char* kStaIfaceConfOverlayPaths[] = {
-    "/apex/com.android.wifi.hal/etc/wifi/wpa_supplicant_overlay.conf",
-    "/vendor/etc/wifi/wpa_supplicant_overlay.conf",
-};
+constexpr char kStaIfaceConfOverlayPath[] =
+    "/etc/wifi/wpa_supplicant_overlay.conf";
+
 constexpr char kP2pIfaceConfPath[] =
 	"/data/vendor/wifi/wpa/p2p_supplicant.conf";
-static const char* kP2pIfaceConfOverlayPaths[] = {
-    "/apex/com.android.wifi.hal/etc/wifi/p2p_supplicant_overlay.conf",
-    "/vendor/etc/wifi/p2p_supplicant_overlay.conf",
-};
+constexpr char kP2pIfaceConfOverlayPath[] =
+    "/etc/wifi/p2p_supplicant_overlay.conf";
+
 // Migrate conf files for existing devices.
-static const char* kTemplateConfPaths[] = {
-    "/apex/com.android.wifi.hal/etc/wifi/wpa_supplicant.conf",
-    "/vendor/etc/wifi/wpa_supplicant.conf",
-    "/system/etc/wifi/wpa_supplicant.conf",
-};
+constexpr char kSystemTemplateConfPath[] =
+    "/system/etc/wifi/wpa_supplicant.conf";
+constexpr char kVendorTemplateConfPath[] =
+    "/etc/wifi/wpa_supplicant.conf";
+
 constexpr char kOldStaIfaceConfPath[] = "/data/misc/wifi/wpa_supplicant.conf";
 constexpr char kOldP2pIfaceConfPath[] = "/data/misc/wifi/p2p_supplicant.conf";
 constexpr mode_t kConfigFileMode = S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP;
 
-const char* resolvePath(const char* paths[], size_t size)
+std::string resolveVendorConfPath(const std::string& conf_path)
 {
-	for (int i = 0; i < size; ++i) {
-		if (access(paths[i], R_OK) == 0) {
-			return paths[i];
-		}
-	}
-	return nullptr;
+#if defined(__ANDROID_APEX__)
+	// returns "/apex/<apexname>" + conf_path
+	std::string path = android::base::GetExecutablePath();
+	return path.substr(0, path.find_first_of('/', strlen("/apex/"))) + conf_path;
+#else
+	return std::string("/vendor") + conf_path;
+#endif
 }
 
 int copyFile(
@@ -143,20 +145,26 @@ int ensureConfigFileExists(
 		unlink(config_file_path.c_str());
 		return -1;
 	}
-	const char* path =
-	    resolvePath(kTemplateConfPaths,
-	    sizeof(kTemplateConfPaths)/sizeof(kTemplateConfPaths[0]));
-	if (path != nullptr) {
-		ret = copyFileIfItExists(path, config_file_path);
-		if (ret == 0) {
-			wpa_printf(
-			    MSG_INFO, "Copied template conf file from %s to %s",
-			    path, config_file_path.c_str());
-			return 0;
-		} else if (ret == -1) {
-			unlink(config_file_path.c_str());
-			return -1;
-		}
+	std::string vendor_template_conf_path = resolveVendorConfPath(kVendorTemplateConfPath);
+	ret = copyFileIfItExists(vendor_template_conf_path, config_file_path);
+	if (ret == 0) {
+		wpa_printf(
+		    MSG_INFO, "Copied template conf file from %s to %s",
+		    vendor_template_conf_path.c_str(), config_file_path.c_str());
+		return 0;
+	} else if (ret == -1) {
+		unlink(config_file_path.c_str());
+		return -1;
+	}
+	ret = copyFileIfItExists(kSystemTemplateConfPath, config_file_path);
+	if (ret == 0) {
+		wpa_printf(
+		    MSG_INFO, "Copied template conf file from %s to %s",
+		    kSystemTemplateConfPath, config_file_path.c_str());
+		return 0;
+	} else if (ret == -1) {
+		unlink(config_file_path.c_str());
+		return -1;
 	}
 	// Did not create the conf file.
 	return -1;
@@ -382,11 +390,10 @@ Supplicant::addP2pInterfaceInternal(const std::string& name)
 			SupplicantStatusCode::FAILURE_UNKNOWN, "Conf file does not exist")};
 	}
 	iface_params.confname = kP2pIfaceConfPath;
-	const char* path = resolvePath(
-		    kP2pIfaceConfOverlayPaths,
-		    sizeof(kP2pIfaceConfOverlayPaths)/sizeof(kP2pIfaceConfOverlayPaths[0]));
-	if (path != nullptr) {
-		iface_params.confanother = path;
+	std::string overlay_path = resolveVendorConfPath(kP2pIfaceConfOverlayPath);
+	int ret = access(overlay_path.c_str(), R_OK);
+	if (ret == 0) {
+		iface_params.confanother = overlay_path.c_str();
 	}
 
 	iface_params.ifname = name.c_str();
@@ -442,11 +449,10 @@ Supplicant::addStaInterfaceInternal(const std::string& name)
 			SupplicantStatusCode::FAILURE_UNKNOWN, "Conf file does not exist")};
 	}
 	iface_params.confname = kStaIfaceConfPath;
-	const char* path = resolvePath(
-		    kStaIfaceConfOverlayPaths,
-		    sizeof(kStaIfaceConfOverlayPaths)/sizeof(kStaIfaceConfOverlayPaths[0]));
-	if (path != nullptr) {
-		iface_params.confanother = path;
+	std::string overlay_path = resolveVendorConfPath(kStaIfaceConfOverlayPath);
+	int ret = access(overlay_path.c_str(), R_OK);
+	if (ret == 0) {
+		iface_params.confanother = overlay_path.c_str();
 	}
 
 	iface_params.ifname = name.c_str();

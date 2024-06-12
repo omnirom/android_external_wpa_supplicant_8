@@ -614,22 +614,6 @@ static void wnm_clear_acceptable(struct wpa_supplicant *wpa_s)
 		wpa_s->wnm_neighbor_report_elements[i].acceptable = 0;
 }
 
-
-static struct wpa_bss * get_first_acceptable(struct wpa_supplicant *wpa_s)
-{
-	unsigned int i;
-	struct neighbor_report *nei;
-
-	for (i = 0; i < wpa_s->wnm_num_neighbor_report; i++) {
-		nei = &wpa_s->wnm_neighbor_report_elements[i];
-		if (nei->acceptable)
-			return wpa_bss_get_bssid(wpa_s, nei->bssid);
-	}
-
-	return NULL;
-}
-
-
 #ifdef CONFIG_MBO
 static struct wpa_bss *
 get_mbo_transition_candidate(struct wpa_supplicant *wpa_s,
@@ -724,6 +708,29 @@ end:
 #endif /* CONFIG_MBO */
 
 
+static struct wpa_bss * find_better_target(struct wpa_bss *a,
+					   struct wpa_bss *b)
+{
+	if (!a)
+		return b;
+	if (!b)
+		return a;
+
+	if (a->est_throughput > b->est_throughput) {
+		wpa_printf(MSG_DEBUG, "WNM: A is better: " MACSTR
+			   " est-tput: %d  B: " MACSTR " est-tput: %d",
+			   MAC2STR(a->bssid), a->est_throughput,
+			   MAC2STR(b->bssid), b->est_throughput);
+		return a;
+	}
+
+	wpa_printf(MSG_DEBUG, "WNM: B is better, A: " MACSTR
+		   " est-tput: %d  B: " MACSTR " est-tput: %d",
+		   MAC2STR(a->bssid), a->est_throughput,
+		   MAC2STR(b->bssid), b->est_throughput);
+	return b;
+}
+
 static struct wpa_bss *
 compare_scan_neighbor_results(struct wpa_supplicant *wpa_s, os_time_t age_secs,
 			      enum mbo_transition_reject_reason *reason)
@@ -731,6 +738,8 @@ compare_scan_neighbor_results(struct wpa_supplicant *wpa_s, os_time_t age_secs,
 	u8 i;
 	struct wpa_bss *bss = wpa_s->current_bss;
 	struct wpa_bss *target;
+	struct wpa_bss *best_target = NULL;
+	struct wpa_bss *bss_in_list = NULL;
 
 	if (!bss)
 		return NULL;
@@ -817,25 +826,44 @@ compare_scan_neighbor_results(struct wpa_supplicant *wpa_s, os_time_t age_secs,
 		}
 
 		nei->acceptable = 1;
+
+		best_target = find_better_target(target, best_target);
+		if (target == bss)
+			bss_in_list = bss;
 	}
 
 #ifdef CONFIG_MBO
 	if (wpa_s->wnm_mbo_trans_reason_present)
 		target = get_mbo_transition_candidate(wpa_s, reason);
 	else
-		target = get_first_acceptable(wpa_s);
+		target = best_target;
 #else /* CONFIG_MBO */
-	target = get_first_acceptable(wpa_s);
+	target = best_target;
 #endif /* CONFIG_MBO */
 
-	if (target) {
-		wpa_printf(MSG_DEBUG,
-			   "WNM: Found an acceptable preferred transition candidate BSS "
-			   MACSTR " (RSSI %d)",
-			   MAC2STR(target->bssid), target->level);
+	if (!target)
+		return NULL;
+
+	wpa_printf(MSG_DEBUG,
+		   "WNM: Found an acceptable preferred transition candidate BSS "
+		   MACSTR " (RSSI %d, tput: %d  bss-tput: %d)",
+		   MAC2STR(target->bssid), target->level,
+		   target->est_throughput, bss->est_throughput);
+
+	if (!bss_in_list)
+		return target;
+
+	if ((!target->est_throughput && !bss_in_list->est_throughput) ||
+	    (target->est_throughput > bss_in_list->est_throughput &&
+	     target->est_throughput - bss_in_list->est_throughput >
+	     bss_in_list->est_throughput >> 4)) {
+		/* It is more than 100/16 percent better, so switch. */
+		return target;
 	}
 
-	return target;
+	wpa_printf(MSG_DEBUG,
+		   "WNM: Stay with our current BSS, not enough change in estimated throughput to switch");
+	return bss_in_list;
 }
 
 
@@ -1207,6 +1235,11 @@ static int cand_pref_compar(const void *a, const void *b)
 	const struct neighbor_report *aa = a;
 	const struct neighbor_report *bb = b;
 
+	if (aa->disassoc_imminent && !bb->disassoc_imminent)
+		return 1;
+	if (bb->disassoc_imminent && !aa->disassoc_imminent)
+		return -1;
+
 	if (!aa->preference_present && !bb->preference_present)
 		return 0;
 	if (!aa->preference_present)
@@ -1502,9 +1535,8 @@ static void ieee802_11_rx_bss_trans_mgmt_req(struct wpa_supplicant *wpa_s,
 	if (wpa_s->wnm_mode & WNM_BSS_TM_REQ_DISASSOC_IMMINENT) {
 		wpa_msg(wpa_s, MSG_INFO, "WNM: Disassociation Imminent - "
 			"Disassociation Timer %u", wpa_s->wnm_dissoc_timer);
-		if (wpa_s->wnm_dissoc_timer && !wpa_s->scanning) {
-			/* TODO: mark current BSS less preferred for
-			 * selection */
+		if (wpa_s->wnm_dissoc_timer && !wpa_s->scanning &&
+		    (!wpa_s->current_ssid || !wpa_s->current_ssid->bssid_set)) {
 			wpa_printf(MSG_DEBUG, "Trying to find another BSS");
 			wpa_supplicant_req_scan(wpa_s, 0, 0);
 		}
@@ -1538,6 +1570,12 @@ static void ieee802_11_rx_bss_trans_mgmt_req(struct wpa_supplicant *wpa_s,
 				rep = &wpa_s->wnm_neighbor_report_elements[
 					wpa_s->wnm_num_neighbor_report];
 				wnm_parse_neighbor_report(wpa_s, pos, len, rep);
+				if ((wpa_s->wnm_mode &
+				     WNM_BSS_TM_REQ_DISASSOC_IMMINENT) &&
+				    os_memcmp(rep->bssid, wpa_s->bssid,
+					      ETH_ALEN) == 0)
+					rep->disassoc_imminent = 1;
+
 				wpa_s->wnm_num_neighbor_report++;
 #ifdef CONFIG_MBO
 				if (wpa_s->wnm_mbo_trans_reason_present &&
@@ -1556,6 +1594,17 @@ static void ieee802_11_rx_bss_trans_mgmt_req(struct wpa_supplicant *wpa_s,
 		if (!wpa_s->wnm_num_neighbor_report) {
 			wpa_printf(MSG_DEBUG,
 				   "WNM: Candidate list included bit is set, but no candidates found");
+			wnm_send_bss_transition_mgmt_resp(
+				wpa_s, wpa_s->wnm_dialog_token,
+				WNM_BSS_TM_REJECT_NO_SUITABLE_CANDIDATES,
+				MBO_TRANSITION_REJECT_REASON_UNSPECIFIED, 0,
+				NULL);
+			return;
+		}
+
+		if (wpa_s->current_ssid && wpa_s->current_ssid->bssid_set) {
+			wpa_printf(MSG_DEBUG,
+				   "WNM: Configuration prevents roaming (BSSID set)");
 			wnm_send_bss_transition_mgmt_resp(
 				wpa_s, wpa_s->wnm_dialog_token,
 				WNM_BSS_TM_REJECT_NO_SUITABLE_CANDIDATES,

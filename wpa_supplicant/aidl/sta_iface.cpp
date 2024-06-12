@@ -41,7 +41,8 @@ using aidl::android::hardware::wifi::supplicant::SupplicantStatusCode;
 using aidl::android::hardware::wifi::supplicant::WifiTechnology;
 using aidl::android::hardware::wifi::supplicant::misc_utils::createStatus;
 
-// TODO (b/204810426): Import from wifi vendor AIDL interface when it exists
+// Enum definition copied from the Vendor HAL interface.
+// See android.hardware.wifi.WifiChannelWidthInMhz
 enum WifiChannelWidthInMhz {
   WIDTH_20	= 0,
   WIDTH_40	= 1,
@@ -1880,6 +1881,7 @@ StaIface::getConnectionCapabilitiesInternal()
 		}
 		capa.maxNumberRxSpatialStreams = wpa_s->connection_max_nss_rx;
 		capa.maxNumberTxSpatialStreams = wpa_s->connection_max_nss_tx;
+		capa.apTidToLinkMapNegotiationSupported = wpa_s->ap_t2lm_negotiation_support;
 	} else {
 		capa.technology = WifiTechnology::UNKNOWN;
 		capa.channelBandwidth = WifiChannelWidthInMhz::WIDTH_20;
@@ -2265,9 +2267,73 @@ static int scs_parse_type4(struct tclas_element *elem, QosPolicyScsData qos_poli
 	return 0;
 }
 
+inline bool hasOptQosCharField(QosCharacteristics chars, QosCharacteristics::QosCharacteristicsMask field) {
+	return chars.optionalFieldMask & static_cast<uint32_t>(field);
+}
+
+static int parseQosCharacteristics(struct scs_desc_elem *descElem, QosPolicyScsData qosPolicy) {
+	struct qos_characteristics* suppChars = &descElem->qos_char_elem;
+	if (!qosPolicy.QosCharacteristics) {
+		suppChars->available = false;
+		return 0;
+	}
+
+	QosCharacteristics inputChars = qosPolicy.QosCharacteristics.value();
+	suppChars->available = true;
+
+	if (qosPolicy.direction == QosPolicyScsData::LinkDirection::DOWNLINK) {
+		suppChars->direction = SCS_DIRECTION_DOWN;
+	} else if (qosPolicy.direction == QosPolicyScsData::LinkDirection::UPLINK) {
+		suppChars->direction = SCS_DIRECTION_UP;
+	} else {
+		wpa_printf(MSG_ERROR, "Invalid QoS direction: %d", static_cast<int>(qosPolicy.direction));
+		return -1;
+	}
+
+	// Mandatory fields
+	suppChars->min_si = inputChars.minServiceIntervalUs;
+	suppChars->max_si = inputChars.maxServiceIntervalUs;
+	suppChars->min_data_rate = inputChars.minDataRateKbps;
+	suppChars->delay_bound = inputChars.delayBoundUs;
+
+	// Optional fields
+	uint16_t suppMask = 0;
+	if (hasOptQosCharField(inputChars, QosCharacteristics::QosCharacteristicsMask::MAX_MSDU_SIZE)) {
+		suppMask |= SCS_QOS_BIT_MAX_MSDU_SIZE;
+		suppChars->max_msdu_size = inputChars.maxMsduSizeOctets;
+	}
+	if (hasOptQosCharField(inputChars, QosCharacteristics::QosCharacteristicsMask::SERVICE_START_TIME)) {
+		// Client must provide both the service start time and the link ID if this field exists.
+		suppMask |= SCS_QOS_BIT_SERVICE_START_TIME | SCS_QOS_BIT_SERVICE_START_TIME_LINKID;
+		suppChars->service_start_time = inputChars.serviceStartTimeUs;
+		suppChars->service_start_time_link_id = inputChars.serviceStartTimeLinkId;
+	}
+	if (hasOptQosCharField(inputChars, QosCharacteristics::QosCharacteristicsMask::MEAN_DATA_RATE)) {
+		suppMask |= SCS_QOS_BIT_MEAN_DATA_RATE;
+		suppChars->mean_data_rate = inputChars.meanDataRateKbps;
+	}
+	if (hasOptQosCharField(inputChars, QosCharacteristics::QosCharacteristicsMask::BURST_SIZE)) {
+		suppMask |= SCS_QOS_BIT_DELAYED_BOUNDED_BURST_SIZE;
+		suppChars->burst_size = inputChars.burstSizeOctets;
+	}
+	if (hasOptQosCharField(inputChars, QosCharacteristics::QosCharacteristicsMask::MSDU_LIFETIME)) {
+		suppMask |= SCS_QOS_BIT_MSDU_LIFETIME;
+		suppChars->msdu_lifetime = inputChars.msduLifetimeMs;
+	}
+	if (hasOptQosCharField(inputChars, QosCharacteristics::QosCharacteristicsMask::MSDU_DELIVERY_INFO)) {
+		suppMask |= SCS_QOS_BIT_MSDU_DELIVERY_INFO;
+		// Expects the delivery ratio in the lower 4 bits and the count exponent
+		// in the upper 4 bits. See Figure 9-1001aw in the 802.11be spec.
+		suppChars->msdu_delivery_info = inputChars.msduDeliveryInfo.countExponent << 4
+			| (uint8_t) inputChars.msduDeliveryInfo.deliveryRatio;
+	}
+	suppChars->mask = suppMask;
+	return 0;
+}
+
 /**
  * This is a request to the AP (if it supports the feature) to apply the QoS policy
- * on traffic in the Downlink.
+ * on traffic in the Downlink or Uplink direction.
  */
 std::pair<std::vector<QosPolicyScsRequestStatus>, ndk::ScopedAStatus>
 StaIface::addQosPolicyRequestForScsInternal(const std::vector<QosPolicyScsData>& qosPolicyData)
@@ -2285,6 +2351,11 @@ StaIface::addQosPolicyRequestForScsInternal(const std::vector<QosPolicyScsData>&
 			createStatus(SupplicantStatusCode::FAILURE_ONGOING_REQUEST)};
 	}
 	free_up_scs_desc(scs_data);
+
+	// Uplink policies are not supported before AIDL V3.
+	AidlManager *aidl_manager = AidlManager::getInstance();
+	WPA_ASSERT(aidl_manager);
+	bool supportsUplink = aidl_manager->isAidlServiceVersionAtLeast(3);
 
 	/**
 	 * format:
@@ -2321,38 +2392,48 @@ StaIface::addQosPolicyRequestForScsInternal(const std::vector<QosPolicyScsData>&
 		}
 
 		status.qosPolicyScsRequestStatusCode = QosPolicyScsRequestStatusCode::INVALID;
-		user_priority = qosPolicyData[i].userPriority;
-		if (user_priority < 0 || user_priority > 7) {
-			wpa_printf(MSG_ERROR,
-				   "Intra-Access user priority invalid %d", user_priority);
+		if (parseQosCharacteristics(&desc_elem, qosPolicyData[i])) {
 			reports.push_back(status);
 			continue;
 		}
 
-		desc_elem.intra_access_priority = user_priority;
-		desc_elem.scs_up_avail = true;
+		// TCLAS elements only need to be processed for downlink policies.
+		QosPolicyScsData::LinkDirection policyDirection = supportsUplink
+			? qosPolicyData[i].direction : QosPolicyScsData::LinkDirection::DOWNLINK;
+		if (policyDirection == QosPolicyScsData::LinkDirection::DOWNLINK) {
+			user_priority = qosPolicyData[i].userPriority;
+			if (user_priority < 0 || user_priority > 7) {
+				wpa_printf(MSG_ERROR,
+					"Intra-Access user priority invalid %d", user_priority);
+				reports.push_back(status);
+				continue;
+			}
 
-		/**
-		 * Supported classifier type 4.
-		 */
-		desc_elem.tclas_elems = (struct tclas_element *) os_malloc(sizeof(struct tclas_element));
-		if (!desc_elem.tclas_elems) {
-			wpa_printf(MSG_ERROR,
-				   "Classifier type4 failed with Bad malloc");
-			reports.push_back(status);
-			continue;
+			desc_elem.intra_access_priority = user_priority;
+			desc_elem.scs_up_avail = true;
+
+			/**
+			* Supported classifier type 4.
+			*/
+			desc_elem.tclas_elems = (struct tclas_element *) os_malloc(sizeof(struct tclas_element));
+			if (!desc_elem.tclas_elems) {
+				wpa_printf(MSG_ERROR,
+					"Classifier type4 failed with Bad malloc");
+				reports.push_back(status);
+				continue;
+			}
+
+			elem = desc_elem.tclas_elems;
+			memset(elem, 0, sizeof(struct tclas_element));
+			elem->classifier_type = 4;
+			if (scs_parse_type4(elem, qosPolicyData[i]) < 0) {
+				os_free(elem);
+				reports.push_back(status);
+				continue;
+			}
+
+			desc_elem.num_tclas_elem = 1;
 		}
-
-		elem = desc_elem.tclas_elems;
-		memset(elem, 0, sizeof(struct tclas_element));
-		elem->classifier_type = 4;
-		if (scs_parse_type4(elem, qosPolicyData[i]) < 0) {
-			os_free(elem);
-			reports.push_back(status);
-			continue;
-		}
-
-		desc_elem.num_tclas_elem = 1;
 
 		/* Reallocate memory to scs_desc_elems to accomodate further policies */
 		new_desc_elems = static_cast<struct scs_desc_elem *>(os_realloc(scs_data->scs_desc_elems,
@@ -2440,11 +2521,46 @@ StaIface::removeQosPolicyForScsInternal(const std::vector<uint8_t>& scsPolicyIds
 }
 
 ::ndk::ScopedAStatus StaIface::configureMscsInternal(const MscsParams& params) {
-	return createStatus(SupplicantStatusCode::FAILURE_UNSUPPORTED);
+	struct wpa_supplicant *wpa_s = retrieveIfacePtr();
+	struct robust_av_data *robust_av = &wpa_s->robust_av;
+	os_memset(robust_av, 0, sizeof(struct robust_av_data));
+
+	if (params.upLimit < 0 || params.upLimit > 7) {
+		wpa_printf(MSG_ERROR, "Invalid MSCS params - upLimit=%d", params.upLimit);
+		return createStatus(SupplicantStatusCode::FAILURE_ARGS_INVALID);
+	}
+	if (params.streamTimeoutUs < 0 || params.streamTimeoutUs > 60000000 /* 60 sec */) {
+		wpa_printf(MSG_ERROR, "Invalid MSCS params - streamTimeoutUs=%d", params.streamTimeoutUs);
+		return createStatus(SupplicantStatusCode::FAILURE_ARGS_INVALID);
+	}
+
+	robust_av->request_type = SCS_REQ_ADD;
+	robust_av->up_bitmap = params.upBitmap;
+	robust_av->up_limit = params.upLimit;
+	robust_av->stream_timeout = params.streamTimeoutUs;
+	robust_av->frame_classifier[0] = params.frameClassifierMask;  // single type-4 frame classifier mask
+	robust_av->frame_classifier_len = 1;
+
+	int status = wpas_send_mscs_req(wpa_s);
+	wpa_printf(MSG_INFO, "MSCS add request status: %d", status);
+
+	// Mark config as invalid to avoid retransmitting automatically.
+	robust_av->valid_config = false;
+	return ndk::ScopedAStatus::ok();
 }
 
 ::ndk::ScopedAStatus StaIface::disableMscsInternal() {
-	return createStatus(SupplicantStatusCode::FAILURE_UNSUPPORTED);
+	struct wpa_supplicant *wpa_s = retrieveIfacePtr();
+	struct robust_av_data *robust_av = &wpa_s->robust_av;
+	os_memset(robust_av, 0, sizeof(struct robust_av_data));
+
+	robust_av->request_type = SCS_REQ_REMOVE;
+	robust_av->valid_config = false;
+
+	int status = wpas_send_mscs_req(wpa_s);
+	wpa_printf(MSG_INFO, "MSCS remove request status: %d", status);
+
+	return ndk::ScopedAStatus::ok();
 }
 
 /**

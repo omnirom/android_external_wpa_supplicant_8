@@ -1594,10 +1594,10 @@ static int wpas_dbus_get_scan_channels(DBusMessage *message,
 }
 
 
-static int wpas_dbus_get_scan_allow_roam(DBusMessage *message,
-					 DBusMessageIter *var,
-					 dbus_bool_t *allow,
-					 DBusMessage **reply)
+static int wpas_dbus_get_scan_boolean(DBusMessage *message,
+				      DBusMessageIter *var,
+				      dbus_bool_t *allow,
+				      DBusMessage **reply)
 {
 	if (dbus_message_iter_get_arg_type(var) != DBUS_TYPE_BOOLEAN) {
 		wpa_printf(MSG_DEBUG, "%s[dbus]: Type must be a boolean",
@@ -1629,7 +1629,10 @@ DBusMessage * wpas_dbus_handler_scan(DBusMessage *message,
 	char *key = NULL, *type = NULL;
 	struct wpa_driver_scan_params params;
 	size_t i;
-	dbus_bool_t allow_roam = 1;
+	dbus_bool_t allow_roam = TRUE;
+	dbus_bool_t non_coloc_6ghz = FALSE;
+	dbus_bool_t scan_6ghz_only = FALSE;
+	bool custom_ies = false;
 
 	os_memset(&params, 0, sizeof(params));
 
@@ -1656,15 +1659,28 @@ DBusMessage * wpas_dbus_handler_scan(DBusMessage *message,
 			if (wpas_dbus_get_scan_ies(message, &variant_iter,
 						   &params, &reply) < 0)
 				goto out;
+			custom_ies = true;
 		} else if (os_strcmp(key, "Channels") == 0) {
 			if (wpas_dbus_get_scan_channels(message, &variant_iter,
 							&params, &reply) < 0)
 				goto out;
 		} else if (os_strcmp(key, "AllowRoam") == 0) {
-			if (wpas_dbus_get_scan_allow_roam(message,
-							  &variant_iter,
-							  &allow_roam,
-							  &reply) < 0)
+			if (wpas_dbus_get_scan_boolean(message,
+						       &variant_iter,
+						       &allow_roam,
+						       &reply) < 0)
+				goto out;
+		} else if (os_strcmp(key, "NonColoc6GHz") == 0) {
+			if (wpas_dbus_get_scan_boolean(message,
+						       &variant_iter,
+						       &non_coloc_6ghz,
+						       &reply) < 0)
+				goto out;
+		} else if (os_strcmp(key, "6GHzOnly") == 0) {
+			if (wpas_dbus_get_scan_boolean(message,
+						       &variant_iter,
+						       &scan_6ghz_only,
+						       &reply) < 0)
 				goto out;
 		} else {
 			wpa_printf(MSG_DEBUG, "%s[dbus]: Unknown argument %s",
@@ -1682,6 +1698,13 @@ DBusMessage * wpas_dbus_handler_scan(DBusMessage *message,
 		reply = wpas_dbus_error_invalid_args(message, key);
 		goto out;
 	}
+
+	if (non_coloc_6ghz)
+		params.non_coloc_6ghz = 1;
+
+	if (scan_6ghz_only && !params.freqs)
+		wpa_add_scan_freqs_list(wpa_s, HOSTAPD_MODE_IEEE80211A, &params,
+					true, false, false);
 
 	if (os_strcmp(type, "passive") == 0) {
 		if (params.num_ssids || params.extra_ies_len) {
@@ -1703,7 +1726,8 @@ DBusMessage * wpas_dbus_handler_scan(DBusMessage *message,
 			if (params.freqs && params.freqs[0]) {
 				wpa_s->last_scan_req = MANUAL_SCAN_REQ;
 				if (wpa_supplicant_trigger_scan(wpa_s,
-								&params)) {
+								&params,
+								false, false)) {
 					reply = wpas_dbus_error_scan_error(
 						message,
 						"Scan request rejected");
@@ -1729,7 +1753,8 @@ DBusMessage * wpas_dbus_handler_scan(DBusMessage *message,
 		}
 
 		wpa_s->last_scan_req = MANUAL_SCAN_REQ;
-		if (wpa_supplicant_trigger_scan(wpa_s, &params)) {
+		if (wpa_supplicant_trigger_scan(wpa_s, &params, !custom_ies,
+						false)) {
 			reply = wpas_dbus_error_scan_error(
 				message, "Scan request rejected");
 		}
@@ -4318,11 +4343,18 @@ dbus_bool_t wpas_dbus_getter_pkcs11_engine_path(
 	const struct wpa_dbus_property_desc *property_desc,
 	DBusMessageIter *iter, DBusError *error, void *user_data)
 {
+
+#ifndef CONFIG_PKCS11_ENGINE_PATH
 	struct wpa_supplicant *wpa_s = user_data;
 
 	return wpas_dbus_string_property_getter(iter,
 						wpa_s->conf->pkcs11_engine_path,
 						error);
+#else /* CONFIG_PKCS11_ENGINE_PATH */
+	return wpas_dbus_string_property_getter(iter,
+						CONFIG_PKCS11_ENGINE_PATH,
+						error);
+#endif /* CONFIG_PKCS11_ENGINE_PATH */
 }
 
 
@@ -4339,11 +4371,17 @@ dbus_bool_t wpas_dbus_getter_pkcs11_module_path(
 	const struct wpa_dbus_property_desc *property_desc,
 	DBusMessageIter *iter, DBusError *error, void *user_data)
 {
+#ifndef CONFIG_PKCS11_MODULE_PATH
 	struct wpa_supplicant *wpa_s = user_data;
 
 	return wpas_dbus_string_property_getter(iter,
 						wpa_s->conf->pkcs11_module_path,
 						error);
+#else /* CONFIG_PKCS11_MODULE_PATH */
+	return wpas_dbus_string_property_getter(iter,
+						CONFIG_PKCS11_MODULE_PATH,
+						error);
+#endif /* CONFIG_PKCS11_MODULE_PATH */
 }
 
 
@@ -5278,7 +5316,7 @@ static dbus_bool_t wpas_dbus_get_bss_security_prop(
 	DBusMessageIter iter_dict, variant_iter;
 	const char *group;
 	const char *pairwise[5]; /* max 5 pairwise ciphers is supported */
-	const char *key_mgmt[18]; /* max 18 key managements may be supported */
+	const char *key_mgmt[19]; /* max 19 key managements may be supported */
 	int n;
 
 	if (!dbus_message_iter_open_container(iter, DBUS_TYPE_VARIANT,
@@ -5341,6 +5379,10 @@ static dbus_bool_t wpas_dbus_get_bss_security_prop(
 #endif /* CONFIG_OWE */
 	if (ie_data->key_mgmt & WPA_KEY_MGMT_NONE)
 		key_mgmt[n++] = "wpa-none";
+#ifdef CONFIG_SHA384
+	if (ie_data->key_mgmt & WPA_KEY_MGMT_IEEE8021X_SHA384)
+		key_mgmt[n++] = "wpa-eap-sha384";
+#endif /* CONFIG_SHA384 */
 
 	if (!wpa_dbus_dict_append_string_array(&iter_dict, "KeyMgmt",
 					       key_mgmt, n))

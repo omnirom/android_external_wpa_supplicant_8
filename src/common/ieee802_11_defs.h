@@ -501,6 +501,7 @@
 #define WLAN_EID_EXT_EHT_CAPABILITIES 108
 #define WLAN_EID_EXT_TID_TO_LINK_MAPPING 109
 #define WLAN_EID_EXT_MULTI_LINK_TRAFFIC_INDICATION 110
+#define WLAN_EID_EXT_QOS_CHARACTERISTICS 113
 #define WLAN_EID_EXT_AKM_SUITE_SELECTOR 114
 
 /* Extended Capabilities field */
@@ -676,6 +677,19 @@
 #define WLAN_PA_FTM 33
 #define WLAN_PA_FILS_DISCOVERY 34
 #define WLAN_PA_LOCATION_MEASUREMENT_REPORT 47
+
+/* HT Action field values (IEEE P802.11-REVme/D4.0, 9.6.11.1, Table 9-491) */
+#define WLAN_HT_ACTION_NOTIFY_CHANWIDTH 0
+#define WLAN_HT_ACTION_SMPS 1
+#define WLAN_HT_ACTION_CSI 4
+#define WLAN_HT_ACTION_NONCOMPRESSED_BF 5
+#define WLAN_HT_ACTION_COMPRESSED_BF 6
+#define WLAN_HT_ACTION_ASEL_IDX_FEEDBACK 7
+
+/* VHT Action field values (IEEE P802.11-REVme/D4.0, 9.6.22.1, Table 9-579) */
+#define WLAN_VHT_ACTION_COMPRESSED_BF 0
+#define WLAN_VHT_ACTION_GROUP_ID_MGMT 1
+#define WLAN_VHT_ACTION_OPMODE_NOTIF 2
 
 /* Protected Dual of Public Action frames (IEEE Std 802.11-2016, 9.6.11,
  * Table 9-332) */
@@ -1190,9 +1204,6 @@ struct ieee80211_ampe_ie {
 	 */
 } STRUCT_PACKED;
 
-#ifdef _MSC_VER
-#pragma pack(pop)
-#endif /* _MSC_VER */
 
 #define ERP_INFO_NON_ERP_PRESENT BIT(0)
 #define ERP_INFO_USE_PROTECTION BIT(1)
@@ -1361,6 +1372,10 @@ struct ieee80211_ampe_ie {
 #define VHT_OPMODE_NOTIF_RX_NSS_SHIFT		    4
 
 #define VHT_RX_NSS_MAX_STREAMS			    8
+
+#define VHT_OPMODE_CHANNEL_40MHZ		    ((u8) BIT(0))
+#define VHT_OPMODE_CHANNEL_80MHZ		    ((u8) BIT(1))
+#define VHT_OPMODE_CHANNEL_160MHZ		    ((u8) BIT(1) | BIT(2))
 
 /* VHT operation information - channel widths */
 #define CHANWIDTH_USE_HT	0
@@ -2479,9 +2494,14 @@ struct ieee80211_he_mu_edca_parameter_set {
  */
 #define RNR_HEADER_LEN                              2
 #define RNR_TBTT_HEADER_LEN                         4
+#define RNR_TBTT_INFO_HDR_TYPE_MSK                  0x03
+#define RNR_TBTT_INFO_HDR_FILTERED_AP               0x04
+#define RNR_TBTT_INFO_HDR_CNT_MSK                   0xf0
 #define RNR_TBTT_INFO_COUNT(x)                      (((x) & 0xf) << 4)
 #define RNR_TBTT_INFO_COUNT_MAX                     16
+#define RNR_TBTT_INFO_COUNT_VAL(x)                  (((x) & 0xf0) >> 4)
 #define RNR_TBTT_INFO_LEN                           13
+#define RNR_TBTT_INFO_MLD_LEN                       16
 #define RNR_NEIGHBOR_AP_OFFSET_UNKNOWN              255
 /* Figure 9-632a - BSS Parameters subfield format */
 #define RNR_BSS_PARAM_OCT_RECOMMENDED               BIT(0)
@@ -2641,6 +2661,7 @@ struct ieee80211_eht_capabilities {
  * STA Control field definitions of Per-STA Profile subelement in Basic
  * Multi-Link element as described in Figure 9-1002n: STA Control field format.
  */
+#define BASIC_MLE_STA_CTRL_LEN				2
 #define BASIC_MLE_STA_CTRL_LINK_ID_MASK			0x000F
 #define BASIC_MLE_STA_CTRL_COMPLETE_PROFILE		0x0010
 #define BASIC_MLE_STA_CTRL_PRES_STA_MAC			0x0020
@@ -2694,6 +2715,16 @@ struct eht_ml_basic_common_info {
 #define EHT_ML_MLD_CAPA_FREQ_SEP_FOR_STR_MASK         0x0f80
 #define EHT_ML_MLD_CAPA_AAR_SUPP                      0x1000
 
+#define EHT_PER_STA_CTRL_LINK_ID_MSK                  0x000f
+#define EHT_PER_STA_CTRL_COMPLETE_PROFILE_MSK         0x0010
+#define EHT_PER_STA_CTRL_MAC_ADDR_PRESENT_MSK         0x0020
+#define EHT_PER_STA_CTRL_BEACON_INTERVAL_PRESENT_MSK  0x0040
+#define EHT_PER_STA_CTRL_TSF_OFFSET_PRESENT_MSK       0x0080
+#define EHT_PER_STA_CTRL_DTIM_INFO_PRESENT_MSK        0x0100
+#define EHT_PER_STA_CTRL_NSTR_LINK_PAIR_PRESENT_MSK   0x0200
+#define EHT_PER_STA_CTRL_NSTR_BM_SIZE_MSK             0x0400
+#define EHT_PER_STA_CTRL_BSS_PARAM_CNT_PRESENT_MSK    0x0800
+
 /* IEEE P802.11be/D2.0, 9.4.2.312.2.4 - Per-STA Profile subelement format */
 struct ieee80211_eht_per_sta_profile {
 	le16 sta_control;
@@ -2718,9 +2749,17 @@ struct eht_ml_probe_req_common_info {
 	u8 variable[];
 } STRUCT_PACKED;
 
-/* IEEE P802.11be/D2.0, 9.4.2.312.4 - Reconfiguration Multi-Link element */
+/* IEEE P802.11be/D4.0, 9.4.2.312.4 - Reconfiguration Multi-Link element */
 
-#define EHT_ML_PRES_BM_RECONFIGURE_MLD_ADDRESS 0x0001
+#define RECONF_MULTI_LINK_CTRL_PRES_MLD_MAC_ADDR   0x0001
+
+#define EHT_PER_STA_RECONF_CTRL_LINK_ID_MSK        0x000f
+#define EHT_PER_STA_RECONF_CTRL_COMPLETE_PROFILE   0x0010
+#define EHT_PER_STA_RECONF_CTRL_MAC_ADDR           0x0020
+#define EHT_PER_STA_RECONF_CTRL_AP_REMOVAL_TIMER   0x0040
+#define EHT_PER_STA_RECONF_CTRL_OP_UPDATE_TYPE_MSK 0x0780
+#define EHT_PER_STA_RECONF_CTRL_OP_PARAMS          0x0800
+#define EHT_PER_STA_RECONF_CTRL_NSTR_BITMAP_SIZE   0x1000
 
 /* IEEE P802.11be/D2.0, 9.4.2.312.1 - Multi-Link element / General */
 
@@ -2791,6 +2830,39 @@ enum scs_request_type {
 	SCS_REQ_CHANGE = 2,
 };
 
+/*
+ * IEEE P802.11be/D4.0, 9.4.2.316 QoS Characteristics element,
+ * Table 9-404s (Direction subfield encoding)
+ */
+enum scs_direction {
+	SCS_DIRECTION_UP = 0,
+	SCS_DIRECTION_DOWN = 1,
+	SCS_DIRECTION_DIRECT = 2,
+};
+
+/*
+ * IEEE P802.11be/D4.0, 9.4.2.316 QoS Characteristics element,
+ * Figure 9-1001av (Control Info field format)
+ */
+#define EHT_QOS_CONTROL_INFO_DIRECTION_OFFSET		0
+#define EHT_QOS_CONTROL_INFO_TID_OFFSET			2
+#define EHT_QOS_CONTROL_INFO_USER_PRIORITY_OFFSET	6
+#define EHT_QOS_CONTROL_INFO_PRESENCE_MASK_OFFSET	9
+#define EHT_QOS_CONTROL_INFO_LINK_ID_OFFSET		25
+
+/*
+ * IEEE P802.11be/D4.0, 9.4.2.316 QoS Characteristics element,
+ * Presence Bitmap Of Additional Parameters
+ */
+#define SCS_QOS_BIT_MAX_MSDU_SIZE			((u16) BIT(0))
+#define SCS_QOS_BIT_SERVICE_START_TIME			((u16) BIT(1))
+#define SCS_QOS_BIT_SERVICE_START_TIME_LINKID		((u16) BIT(2))
+#define SCS_QOS_BIT_MEAN_DATA_RATE			((u16) BIT(3))
+#define SCS_QOS_BIT_DELAYED_BOUNDED_BURST_SIZE		((u16) BIT(4))
+#define SCS_QOS_BIT_MSDU_LIFETIME			((u16) BIT(5))
+#define SCS_QOS_BIT_MSDU_DELIVERY_INFO			((u16) BIT(6))
+#define SCS_QOS_BIT_MEDIUM_TIME				((u16) BIT(7))
+
 /* Optional subelement IDs for MSCS Descriptor element */
 enum mscs_description_subelem {
 	MCSC_SUBELEM_STATUS = 1,
@@ -2837,6 +2909,7 @@ enum mscs_description_subelem {
 #define FD_CAP_PHY_INDEX_HT				2
 #define FD_CAP_PHY_INDEX_VHT				3
 #define FD_CAP_PHY_INDEX_HE				4 /* P802.11ax */
+#define FD_CAP_PHY_INDEX_EHT				5 /* P802.11be */
 #define FD_CAP_PHY_INDEX_SHIFT				10
 
 /*
@@ -2880,6 +2953,7 @@ enum dscp_policy_request_type {
 /* Wi-Fi Alliance Capabilities element - Capabilities field */
 #define WFA_CAPA_QM_DSCP_POLICY BIT(0)
 #define WFA_CAPA_QM_UNSOLIC_DSCP BIT(1)
+#define WFA_CAPA_QM_NON_EHT_SCS_TRAFFIC_DESC BIT(2)
 
 #if defined(CONFIG_DRIVER_NL80211_BRCM) || defined(CONFIG_DRIVER_NL80211_SYNA)
 #define WPA_KEY_MGMT_CROSS_AKM_ROAM (WPA_KEY_MGMT_SAE | WPA_KEY_MGMT_PSK)
@@ -2896,5 +2970,9 @@ struct ieee80211_neighbor_ap_info {
 	/* Followed by the rest of the TBTT Information field contents */
 	u8 data[0];
 } STRUCT_PACKED;
+
+#ifdef _MSC_VER
+#pragma pack(pop)
+#endif /* _MSC_VER */
 
 #endif /* IEEE802_11_DEFS_H */

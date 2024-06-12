@@ -174,6 +174,8 @@ struct ieee802_11_elems {
 
 	struct mb_ies_info mb_ies;
 
+	size_t fte_defrag_len;
+
 	/*
 	 * The number of fragment elements to be skipped after a known
 	 * fragmented element.
@@ -259,6 +261,7 @@ extern const struct oper_class_map global_op_class[];
 extern size_t global_op_class_size;
 
 const u8 * get_ie(const u8 *ies, size_t len, u8 eid);
+const u8 * get_ie_nth(const u8 *ies, size_t len, u8 eid, int nth);
 const u8 * get_ie_ext(const u8 *ies, size_t len, u8 ext);
 const u8 * get_vendor_ie(const u8 *ies, size_t len, u32 vendor_type);
 
@@ -370,4 +373,5 @@ enum chan_width get_operation_channel_width(struct ieee802_11_elems *elems);
 enum chan_width get_sta_operation_chan_width(enum chan_width ap_operation_chan_width,
 					     struct supported_chan_width sta_supported_width);
 
+unsigned int is_ap_t2lm_negotiation_supported(const u8 *mle, size_t mle_len);
 #endif /* IEEE802_11_COMMON_H */

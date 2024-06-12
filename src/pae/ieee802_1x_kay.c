@@ -1856,6 +1856,18 @@ ieee802_1x_mka_decode_dist_sak_body(
 	kay->rcvd_keys++;
 	participant->to_use_sak = true;
 
+	/*
+	 * The key server may not include dist sak and use sak in one packet.
+	 * Meanwhile, after dist sak, the current participant (non-key server)
+	 * will install SC or SA(s) after decoding the dist sak which may take
+	 * few seconds in real physical platforms. Meanwhile, the peer expire
+	 * time is always initialized at adding the key server to peer list.
+	 * The gap between adding the key server to peer list and processing
+	 * next use sak packet may exceed the threshold of MKA_LIFE_TIME (6 s).
+	 * It will cause an unexpected cleanup (delete SC and SA(s)), so,
+	 * update the expire timeout at dist sak also. */
+	peer->expire = time(NULL) + MKA_LIFE_TIME / 1000;
+
 	return 0;
 }
 
@@ -2584,6 +2596,7 @@ static void ieee802_1x_participant_timer(void *eloop_ctx, void *timeout_ctx)
 	struct ieee802_1x_kay_peer *peer, *pre_peer;
 	struct os_reltime now;
 	bool lp_changed;
+	bool key_server_removed;
 	struct receive_sc *rxsc, *pre_rxsc;
 	struct transmit_sa *txsa, *pre_txsa;
 
@@ -2610,6 +2623,7 @@ static void ieee802_1x_participant_timer(void *eloop_ctx, void *timeout_ctx)
 	}
 
 	lp_changed = false;
+	key_server_removed = false;
 	dl_list_for_each_safe(peer, pre_peer, &participant->live_peers,
 			      struct ieee802_1x_kay_peer, list) {
 		if (now.sec > peer->expire) {
@@ -2625,10 +2639,30 @@ static void ieee802_1x_participant_timer(void *eloop_ctx, void *timeout_ctx)
 						participant, rxsc);
 				}
 			}
+			key_server_removed |= peer->is_key_server;
 			dl_list_del(&peer->list);
 			os_free(peer);
 			lp_changed = true;
 		}
+	}
+
+	/* The key server may be removed due to the ingress packets delay.
+	 * In this situation, the endpoint of the key server may not be aware
+	 * of this participant who has removed the key server from the peer
+	 * list. Because the egress traffic is normal, the key server will not
+	 * remove this participant from the peer list of the key server. So in
+	 * the next MKA message, the key server will not dispatch a new SAK to
+	 * this participant. And this participant cannot be aware that that is
+	 * a new round of communication so it will not update its MI at
+	 * re-adding the key server to its peer list. So we need to update MI
+	 * to avoid the failure of the re-establishment MKA session. */
+	if (key_server_removed) {
+		if (!reset_participant_mi(participant))
+			wpa_printf(MSG_WARNING,
+				   "KaY: Could not update mi on key server removal");
+		else
+			wpa_printf(MSG_DEBUG,
+				   "KaY: Update mi on key server removal");
 	}
 
 	if (lp_changed) {

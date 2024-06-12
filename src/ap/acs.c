@@ -256,7 +256,7 @@ struct bw_item {
 static const struct bw_item bw_40[] = {
 	{ 5180, 5200, 38 }, { 5220, 5240, 46 }, { 5260, 5280, 54 },
 	{ 5300, 5320, 62 }, { 5500, 5520, 102 }, { 5540, 5560, 110 },
-	{ 5580, 5600, 110 }, { 5620, 5640, 126}, { 5660, 5680, 134 },
+	{ 5580, 5600, 118 }, { 5620, 5640, 126 }, { 5660, 5680, 134 },
 	{ 5700, 5720, 142 }, { 5745, 5765, 151 }, { 5785, 5805, 159 },
 	{ 5825, 5845, 167 }, { 5865, 5885, 175 },
 	{ 5955, 5975, 3 }, { 5995, 6015, 11 }, { 6035, 6055, 19 },
@@ -1076,12 +1076,6 @@ bw_selected:
 		return ideal_chan;
 	}
 
-#ifdef CONFIG_IEEE80211BE
-	if (iface->conf->punct_acs_threshold)
-		wpa_printf(MSG_DEBUG, "ACS: RU puncturing bitmap 0x%x",
-			   ideal_chan->punct_bitmap);
-#endif /* CONFIG_IEEE80211BE */
-
 	return rand_chan;
 }
 
@@ -1353,12 +1347,20 @@ static int acs_request_scan(struct hostapd_iface *iface)
 
 enum hostapd_chan_status acs_init(struct hostapd_iface *iface)
 {
+	int err;
+
 	wpa_printf(MSG_INFO, "ACS: Automatic channel selection started, this may take a bit");
 
 	if (iface->drv_flags & WPA_DRIVER_FLAGS_ACS_OFFLOAD) {
 		wpa_printf(MSG_INFO, "ACS: Offloading to driver");
-		if (hostapd_drv_do_acs(iface->bss[0]))
+
+		err = hostapd_drv_do_acs(iface->bss[0]);
+		if (err) {
+			if (err == 1)
+				return HOSTAPD_CHAN_INVALID_NO_IR;
 			return HOSTAPD_CHAN_INVALID;
+		}
+
 		return HOSTAPD_CHAN_ACS;
 	}
 

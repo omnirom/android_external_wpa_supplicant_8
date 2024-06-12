@@ -24,6 +24,8 @@
 #include "scan.h"
 #include "mesh.h"
 
+static struct wpabuf * wpa_supplicant_extra_ies(struct wpa_supplicant *wpa_s);
+
 
 static void wpa_supplicant_gen_assoc_event(struct wpa_supplicant *wpa_s)
 {
@@ -278,22 +280,49 @@ static void wpas_trigger_scan_cb(struct wpa_radio_work *work, int deinit)
  * wpa_supplicant_trigger_scan - Request driver to start a scan
  * @wpa_s: Pointer to wpa_supplicant data
  * @params: Scan parameters
+ * @default_ies: Whether or not to use the default IEs in the Probe Request
+ * frames. Note that this will free any existing IEs set in @params, so this
+ * shouldn't be set if the IEs have already been set with
+ * wpa_supplicant_extra_ies(). Otherwise, wpabuf_free() will lead to a
+ * double-free.
+ * @next: Whether or not to perform this scan as the next radio work
  * Returns: 0 on success, -1 on failure
  */
 int wpa_supplicant_trigger_scan(struct wpa_supplicant *wpa_s,
-				struct wpa_driver_scan_params *params)
+				struct wpa_driver_scan_params *params,
+				bool default_ies, bool next)
 {
 	struct wpa_driver_scan_params *ctx;
+	struct wpabuf *ies = NULL;
 
 	if (wpa_s->scan_work) {
 		wpa_dbg(wpa_s, MSG_INFO, "Reject scan trigger since one is already pending");
 		return -1;
 	}
 
+	if (default_ies) {
+		if (params->extra_ies_len) {
+			os_free((u8 *) params->extra_ies);
+			params->extra_ies = NULL;
+			params->extra_ies_len = 0;
+		}
+		ies = wpa_supplicant_extra_ies(wpa_s);
+		if (ies) {
+			params->extra_ies = wpabuf_head(ies);
+			params->extra_ies_len = wpabuf_len(ies);
+		}
+	}
 	ctx = wpa_scan_clone_params(params);
+	if (ies) {
+		wpabuf_free(ies);
+		params->extra_ies = NULL;
+		params->extra_ies_len = 0;
+	}
+	wpa_s->last_scan_all_chan = !params->freqs;
+	wpa_s->last_scan_non_coloc_6ghz = params->non_coloc_6ghz;
 	if (!ctx ||
-	    radio_add_work(wpa_s, 0, "scan", 0, wpas_trigger_scan_cb, ctx) < 0)
-	{
+	    radio_add_work(wpa_s, 0, "scan", next, wpas_trigger_scan_cb,
+			   ctx) < 0) {
 		wpa_scan_free_params(ctx);
 		wpa_msg(wpa_s, MSG_INFO, WPA_EVENT_SCAN_FAILED "ret=-1");
 		return -1;
@@ -392,29 +421,6 @@ wpa_supplicant_build_filter_ssids(struct wpa_config *conf, size_t *num_ssids)
 
 	return ssids;
 }
-
-
-#ifdef CONFIG_P2P
-static bool is_6ghz_supported(struct wpa_supplicant *wpa_s)
-{
-	struct hostapd_channel_data *chnl;
-	int i, j;
-
-	for (i = 0; i < wpa_s->hw.num_modes; i++) {
-		if (wpa_s->hw.modes[i].mode == HOSTAPD_MODE_IEEE80211A) {
-			chnl = wpa_s->hw.modes[i].channels;
-			for (j = 0; j < wpa_s->hw.modes[i].num_channels; j++) {
-				if (chnl[j].flag & HOSTAPD_CHAN_DISABLED)
-					continue;
-				if (is_6ghz_freq(chnl[j].freq))
-					return true;
-			}
-		}
-	}
-
-	return false;
-}
-#endif /* CONFIG_P2P */
 
 
 static void wpa_supplicant_optimize_freqs(
@@ -615,7 +621,7 @@ void wpa_supplicant_set_default_scan_ies(struct wpa_supplicant *wpa_s)
 	wpa_drv_get_ext_capa(wpa_s, type);
 
 	ext_capab_len = wpas_build_ext_capab(wpa_s, ext_capab,
-					     sizeof(ext_capab));
+					     sizeof(ext_capab), NULL);
 	if (ext_capab_len > 0 &&
 	    wpabuf_resize(&default_ies, ext_capab_len) == 0)
 		wpabuf_put_data(default_ies, ext_capab, ext_capab_len);
@@ -649,6 +655,67 @@ void wpa_supplicant_set_default_scan_ies(struct wpa_supplicant *wpa_s)
 }
 
 
+static struct wpabuf * wpa_supplicant_ml_probe_ie(int mld_id, u16 links)
+{
+	struct wpabuf *extra_ie;
+	u16 control = MULTI_LINK_CONTROL_TYPE_PROBE_REQ;
+	size_t len = 3 + 4 + 4 * MAX_NUM_MLD_LINKS;
+	u8 link_id;
+	u8 *len_pos;
+
+	if (mld_id >= 0) {
+		control |= EHT_ML_PRES_BM_PROBE_REQ_AP_MLD_ID;
+		len++;
+	}
+
+	extra_ie = wpabuf_alloc(len);
+	if (!extra_ie)
+		return NULL;
+
+	wpabuf_put_u8(extra_ie, WLAN_EID_EXTENSION);
+	len_pos = wpabuf_put(extra_ie, 1);
+	wpabuf_put_u8(extra_ie, WLAN_EID_EXT_MULTI_LINK);
+
+	wpabuf_put_le16(extra_ie, control);
+
+	/* common info length and MLD ID (if requested) */
+	if (mld_id >= 0) {
+		wpabuf_put_u8(extra_ie, 2);
+		wpabuf_put_u8(extra_ie, mld_id);
+
+		wpa_printf(MSG_DEBUG, "MLD: ML probe targeted at MLD ID %d",
+			   mld_id);
+	} else {
+		wpabuf_put_u8(extra_ie, 1);
+
+		wpa_printf(MSG_DEBUG, "MLD: ML probe targeted at receiving AP");
+	}
+
+	if (!links)
+		wpa_printf(MSG_DEBUG, "MLD: Probing all links");
+	else
+		wpa_printf(MSG_DEBUG, "MLD: Probing links 0x%04x", links);
+
+	for (link_id = 0; link_id < MAX_NUM_MLD_LINKS; link_id++) {
+		if (!(links & BIT(link_id)))
+			continue;
+
+		wpabuf_put_u8(extra_ie, EHT_ML_SUB_ELEM_PER_STA_PROFILE);
+
+		/* Subelement length includes only the control */
+		wpabuf_put_u8(extra_ie, 2);
+
+		control = link_id | EHT_PER_STA_CTRL_COMPLETE_PROFILE_MSK;
+
+		wpabuf_put_le16(extra_ie, control);
+	}
+
+	*len_pos = (u8 *) wpabuf_put(extra_ie, 0) - len_pos - 1;
+
+	return extra_ie;
+}
+
+
 static struct wpabuf * wpa_supplicant_extra_ies(struct wpa_supplicant *wpa_s)
 {
 	struct wpabuf *extra_ie = NULL;
@@ -659,6 +726,15 @@ static struct wpabuf * wpa_supplicant_extra_ies(struct wpa_supplicant *wpa_s)
 	enum wps_request_type req_type = WPS_REQ_ENROLLEE_INFO;
 #endif /* CONFIG_WPS */
 
+	if (!is_zero_ether_addr(wpa_s->ml_probe_bssid)) {
+		extra_ie = wpa_supplicant_ml_probe_ie(wpa_s->ml_probe_mld_id,
+						      wpa_s->ml_probe_links);
+
+		/* No other elements should be included in the probe request */
+		wpa_printf(MSG_DEBUG, "MLD: Scan including only ML element");
+		return extra_ie;
+	}
+
 #ifdef CONFIG_P2P
 	if (wpa_s->p2p_group_interface == P2P_GROUP_INTERFACE_CLIENT)
 		wpa_drv_get_ext_capa(wpa_s, WPA_IF_P2P_CLIENT);
@@ -667,7 +743,7 @@ static struct wpabuf * wpa_supplicant_extra_ies(struct wpa_supplicant *wpa_s)
 		wpa_drv_get_ext_capa(wpa_s, WPA_IF_STATION);
 
 	ext_capab_len = wpas_build_ext_capab(wpa_s, ext_capab,
-					     sizeof(ext_capab));
+					     sizeof(ext_capab), NULL);
 	if (ext_capab_len > 0 &&
 	    wpabuf_resize(&extra_ie, ext_capab_len) == 0)
 		wpabuf_put_data(extra_ie, ext_capab, ext_capab_len);
@@ -1114,6 +1190,10 @@ static void wpa_supplicant_scan(void *eloop_ctx, void *timeout_ctx)
 		params.ssids[0].ssid = wpa_s->go_params->ssid;
 		params.ssids[0].ssid_len = wpa_s->go_params->ssid_len;
 		params.num_ssids = 1;
+		params.bssid = wpa_s->go_params->peer_interface_addr;
+		wpa_printf(MSG_DEBUG, "P2P: Use specific BSSID " MACSTR
+			   " (peer interface address) for scan",
+			   MAC2STR(params.bssid));
 		goto ssid_list_set;
 	}
 
@@ -1124,6 +1204,12 @@ static void wpa_supplicant_scan(void *eloop_ctx, void *timeout_ctx)
 			params.ssids[0].ssid_len =
 				wpa_s->current_ssid->ssid_len;
 			params.num_ssids = 1;
+			if (wpa_s->current_ssid->bssid_set) {
+				params.bssid = wpa_s->current_ssid->bssid;
+				wpa_printf(MSG_DEBUG, "P2P: Use specific BSSID "
+					   MACSTR " for scan",
+					   MAC2STR(params.bssid));
+			}
 		} else {
 			wpa_printf(MSG_DEBUG, "P2P: No specific SSID known for scan during invitation");
 		}
@@ -1397,7 +1483,12 @@ ssid_list_set:
 				"Scan a previously specified BSSID " MACSTR,
 				MAC2STR(params.bssid));
 		}
+	} else if (!is_zero_ether_addr(wpa_s->ml_probe_bssid)) {
+		wpa_printf(MSG_DEBUG, "Scanning for ML probe request");
+		params.bssid = wpa_s->ml_probe_bssid;
+		params.min_probe_req_content = true;
 	}
+
 
 	if (wpa_s->last_scan_req == MANUAL_SCAN_REQ &&
 	    wpa_s->manual_non_coloc_6ghz) {
@@ -1444,12 +1535,12 @@ scan:
 		}
 	}
 
-	if (!params.freqs && is_6ghz_supported(wpa_s) &&
+	if (!params.freqs && wpas_is_6ghz_supported(wpa_s, true) &&
 	    (wpa_s->p2p_in_invitation || wpa_s->p2p_in_provisioning))
 		wpas_p2p_scan_freqs(wpa_s, &params, true);
 #endif /* CONFIG_P2P */
 
-	ret = wpa_supplicant_trigger_scan(wpa_s, scan_params);
+	ret = wpa_supplicant_trigger_scan(wpa_s, scan_params, false, false);
 
 	if (ret && wpa_s->last_scan_req == MANUAL_SCAN_REQ && params.freqs &&
 	    !wpa_s->manual_scan_freqs) {
@@ -1480,6 +1571,10 @@ scan:
 		if (params.bssid)
 			os_memset(wpa_s->next_scan_bssid, 0, ETH_ALEN);
 	}
+
+	wpa_s->ml_probe_mld_id = -1;
+	wpa_s->ml_probe_links = 0;
+	os_memset(wpa_s->ml_probe_bssid, 0, sizeof(wpa_s->ml_probe_bssid));
 }
 
 
@@ -2118,6 +2213,160 @@ struct wpabuf * wpa_scan_get_vendor_ie_multi(const struct wpa_scan_res *res,
 }
 
 
+static int wpas_channel_width_offset(enum chan_width cw)
+{
+	switch (cw) {
+	case CHAN_WIDTH_40:
+		return 1;
+	case CHAN_WIDTH_80:
+		return 2;
+	case CHAN_WIDTH_80P80:
+	case CHAN_WIDTH_160:
+		return 3;
+	case CHAN_WIDTH_320:
+		return 4;
+	default:
+		return 0;
+	}
+}
+
+
+/**
+ * wpas_channel_width_tx_pwr - Calculate the max transmit power at the channel
+ * width
+ * @ies: Information elements
+ * @ies_len: Length of elements
+ * @cw: The channel width
+ * Returns: The max transmit power at the channel width, TX_POWER_NO_CONSTRAINT
+ * if it is not constrained.
+ *
+ * This function is only used to estimate the actual signal RSSI when associated
+ * based on the beacon RSSI at the STA. Beacon frames are transmitted on 20 MHz
+ * channels, while the Data frames usually use higher channel width. Therefore
+ * their RSSIs may be different. Assuming there is a fixed gap between the TX
+ * power limit of the STA defined by the Transmit Power Envelope element and the
+ * TX power of the AP, the difference in the TX power of X MHz and Y MHz at the
+ * STA equals to the difference at the AP, and the difference in the signal RSSI
+ * at the STA. tx_pwr is a floating point number in the standard, but the error
+ * of casting to int is trivial in comparing two BSSes.
+ */
+static int wpas_channel_width_tx_pwr(const u8 *ies, size_t ies_len,
+				     enum chan_width cw)
+{
+#define MIN(a, b) (a < b ? a : b)
+	int offset = wpas_channel_width_offset(cw);
+	const struct element *elem;
+	int max_tx_power = TX_POWER_NO_CONSTRAINT, tx_pwr = 0;
+
+	for_each_element_id(elem, WLAN_EID_TRANSMIT_POWER_ENVELOPE, ies,
+			    ies_len) {
+		int max_tx_pwr_count;
+		enum max_tx_pwr_interpretation tx_pwr_intrpn;
+		enum reg_6g_client_type client_type;
+
+		if (elem->datalen < 1)
+			continue;
+
+		/*
+		 * IEEE Std 802.11ax-2021, 9.4.2.161 (Transmit Power Envelope
+		 * element) defines Maximum Transmit Power Count (B0-B2),
+		 * Maximum Transmit Power Interpretation (B3-B5), and Maximum
+		 * Transmit Power Category (B6-B7).
+		 */
+		max_tx_pwr_count = elem->data[0] & 0x07;
+		tx_pwr_intrpn = (elem->data[0] >> 3) & 0x07;
+		client_type = (elem->data[0] >> 6) & 0x03;
+
+		if (client_type != REG_DEFAULT_CLIENT)
+			continue;
+
+		if (tx_pwr_intrpn == LOCAL_EIRP ||
+		    tx_pwr_intrpn == REGULATORY_CLIENT_EIRP) {
+			int offs;
+
+			max_tx_pwr_count = MIN(max_tx_pwr_count, 3);
+			offs = MIN(offset, max_tx_pwr_count) + 1;
+			if (elem->datalen <= offs)
+				continue;
+			tx_pwr = (signed char) elem->data[offs];
+			/*
+			 * Maximum Transmit Power subfield is encoded as an
+			 * 8-bit 2s complement signed integer in the range -64
+			 * dBm to 63 dBm with a 0.5 dB step. 63.5 dBm means no
+			 * local maximum transmit power constraint.
+			 */
+			if (tx_pwr == 127)
+				continue;
+			tx_pwr /= 2;
+			max_tx_power = MIN(max_tx_power, tx_pwr);
+		} else if (tx_pwr_intrpn == LOCAL_EIRP_PSD ||
+			   tx_pwr_intrpn == REGULATORY_CLIENT_EIRP_PSD) {
+			if (elem->datalen < 2)
+				continue;
+
+			tx_pwr = (signed char) elem->data[1];
+			/*
+			 * Maximum Transmit PSD subfield is encoded as an 8-bit
+			 * 2s complement signed integer. -128 indicates that the
+			 * corresponding 20 MHz channel cannot be used for
+			 * transmission. +127 indicates that no maximum PSD
+			 * limit is specified for the corresponding 20 MHz
+			 * channel.
+			 */
+			if (tx_pwr == 127 || tx_pwr == -128)
+				continue;
+
+			/*
+			 * The Maximum Transmit PSD subfield indicates the
+			 * maximum transmit PSD for the 20 MHz channel. Suppose
+			 * the PSD value is X dBm/MHz, the TX power of N MHz is
+			 * X + 10*log10(N) = X + 10*log10(20) + 10*log10(N/20) =
+			 * X + 13 + 3*log2(N/20)
+			 */
+			tx_pwr = tx_pwr / 2 + 13 + offset * 3;
+			max_tx_power = MIN(max_tx_power, tx_pwr);
+		}
+	}
+
+	return max_tx_power;
+#undef MIN
+}
+
+
+/**
+ * Estimate the RSSI bump of channel width |cw| with respect to 20 MHz channel.
+ * If the TX power has no constraint, it is unable to estimate the RSSI bump.
+ */
+int wpas_channel_width_rssi_bump(const u8 *ies, size_t ies_len,
+				 enum chan_width cw)
+{
+	int max_20mhz_tx_pwr = wpas_channel_width_tx_pwr(ies, ies_len,
+							 CHAN_WIDTH_20);
+	int max_cw_tx_pwr = wpas_channel_width_tx_pwr(ies, ies_len, cw);
+
+	return (max_20mhz_tx_pwr == TX_POWER_NO_CONSTRAINT ||
+		max_cw_tx_pwr == TX_POWER_NO_CONSTRAINT) ?
+		0 : (max_cw_tx_pwr - max_20mhz_tx_pwr);
+}
+
+
+int wpas_adjust_snr_by_chanwidth(const u8 *ies, size_t ies_len,
+				 enum chan_width max_cw, int snr)
+{
+	int rssi_bump = wpas_channel_width_rssi_bump(ies, ies_len, max_cw);
+	/*
+	 * The noise has uniform power spectral density (PSD) across the
+	 * frequency band, its power is proportional to the channel width.
+	 * Suppose the PSD of noise is X dBm/MHz, the noise power of N MHz is
+	 * X + 10*log10(N), and the noise power bump with respect to 20 MHz is
+	 * 10*log10(N) - 10*log10(20) = 10*log10(N/20) = 3*log2(N/20)
+	 */
+	int noise_bump = 3 * wpas_channel_width_offset(max_cw);
+
+	return snr + rssi_bump - noise_bump;
+}
+
+
 /* Compare function for sorting scan results. Return >0 if @b is considered
  * better. */
 static int wpa_scan_result_compar(const void *a, const void *b)
@@ -2129,6 +2378,7 @@ static int wpa_scan_result_compar(const void *a, const void *b)
 	struct wpa_scan_res *wb = *_wb;
 	int wpa_a, wpa_b;
 	int snr_a, snr_b, snr_a_full, snr_b_full;
+	size_t ies_len;
 
 	/* WPA/WPA2 support preferred */
 	wpa_a = wpa_scan_get_vendor_ie(wa, WPA_IE_VENDOR_TYPE) != NULL ||
@@ -2150,10 +2400,21 @@ static int wpa_scan_result_compar(const void *a, const void *b)
 		return -1;
 
 	if (wa->flags & wb->flags & WPA_SCAN_LEVEL_DBM) {
-		snr_a_full = wa->snr;
-		snr_a = MIN(wa->snr, GREAT_SNR);
-		snr_b_full = wb->snr;
-		snr_b = MIN(wb->snr, GREAT_SNR);
+		/*
+		 * The scan result estimates SNR over 20 MHz, while Data frames
+		 * usually use wider channel width. The TX power and noise power
+		 * are both affected by the channel width.
+		 */
+		ies_len = wa->ie_len ? wa->ie_len : wa->beacon_ie_len;
+		snr_a_full = wpas_adjust_snr_by_chanwidth((const u8 *) (wa + 1),
+							  ies_len, wa->max_cw,
+							  wa->snr);
+		snr_a = MIN(snr_a_full, GREAT_SNR);
+		ies_len = wb->ie_len ? wb->ie_len : wb->beacon_ie_len;
+		snr_b_full = wpas_adjust_snr_by_chanwidth((const u8 *) (wb + 1),
+							  ies_len, wb->max_cw,
+							  wb->snr);
+		snr_b = MIN(snr_b_full, GREAT_SNR);
 	} else {
 		/* Level is not in dBm, so we can't calculate
 		 * SNR. Just use raw level (units unknown). */
@@ -2606,11 +2867,17 @@ static unsigned int max_he_eht_rate(const struct minsnr_bitrate_entry table[],
 
 unsigned int wpas_get_est_tpt(const struct wpa_supplicant *wpa_s,
 			      const u8 *ies, size_t ies_len, int rate,
-			      int snr, int freq)
+			      int snr, int freq, enum chan_width *max_cw)
 {
 	struct hostapd_hw_modes *hw_mode;
 	unsigned int est, tmp;
 	const u8 *ie;
+	/*
+	 * No need to apply a bump to the noise here because the
+	 * minsnr_bitrate_entry tables are based on MCS tables where this has
+	 * been taken into account.
+	 */
+	int adjusted_snr;
 
 	/* Limit based on estimated SNR */
 	if (rate > 1 * 2 && snr < 1)
@@ -2659,6 +2926,7 @@ unsigned int wpas_get_est_tpt(const struct wpa_supplicant *wpa_s,
 	if (hw_mode && hw_mode->ht_capab) {
 		ie = get_ie(ies, ies_len, WLAN_EID_HT_CAP);
 		if (ie) {
+			*max_cw = CHAN_WIDTH_20;
 			tmp = max_ht20_rate(snr, false);
 			if (tmp > est)
 				est = tmp;
@@ -2670,7 +2938,11 @@ unsigned int wpas_get_est_tpt(const struct wpa_supplicant *wpa_s,
 		ie = get_ie(ies, ies_len, WLAN_EID_HT_OPERATION);
 		if (ie && ie[1] >= 2 &&
 		    (ie[3] & HT_INFO_HT_PARAM_SECONDARY_CHNL_OFF_MASK)) {
-			tmp = max_ht40_rate(snr, false);
+			*max_cw = CHAN_WIDTH_40;
+			adjusted_snr = snr +
+				wpas_channel_width_rssi_bump(ies, ies_len,
+							     CHAN_WIDTH_40);
+			tmp = max_ht40_rate(adjusted_snr, false);
 			if (tmp > est)
 				est = tmp;
 		}
@@ -2682,6 +2954,8 @@ unsigned int wpas_get_est_tpt(const struct wpa_supplicant *wpa_s,
 		if (ie) {
 			bool vht80 = false, vht160 = false;
 
+			if (*max_cw == CHAN_WIDTH_UNKNOWN)
+				*max_cw = CHAN_WIDTH_20;
 			tmp = max_ht20_rate(snr, true) + 1;
 			if (tmp > est)
 				est = tmp;
@@ -2690,7 +2964,11 @@ unsigned int wpas_get_est_tpt(const struct wpa_supplicant *wpa_s,
 			if (ie && ie[1] >= 2 &&
 			    (ie[3] &
 			     HT_INFO_HT_PARAM_SECONDARY_CHNL_OFF_MASK)) {
-				tmp = max_ht40_rate(snr, true) + 1;
+				*max_cw = CHAN_WIDTH_40;
+				adjusted_snr = snr +
+					wpas_channel_width_rssi_bump(
+						ies, ies_len, CHAN_WIDTH_40);
+				tmp = max_ht40_rate(adjusted_snr, true) + 1;
 				if (tmp > est)
 					est = tmp;
 			}
@@ -2716,7 +2994,11 @@ unsigned int wpas_get_est_tpt(const struct wpa_supplicant *wpa_s,
 			}
 
 			if (vht80) {
-				tmp = max_vht80_rate(snr) + 1;
+				*max_cw = CHAN_WIDTH_80;
+				adjusted_snr = snr +
+					wpas_channel_width_rssi_bump(
+						ies, ies_len, CHAN_WIDTH_80);
+				tmp = max_vht80_rate(adjusted_snr) + 1;
 				if (tmp > est)
 					est = tmp;
 			}
@@ -2725,7 +3007,11 @@ unsigned int wpas_get_est_tpt(const struct wpa_supplicant *wpa_s,
 			    (hw_mode->vht_capab &
 			     (VHT_CAP_SUPP_CHAN_WIDTH_160MHZ |
 			      VHT_CAP_SUPP_CHAN_WIDTH_160_80PLUS80MHZ))) {
-				tmp = max_vht160_rate(snr) + 1;
+				*max_cw = CHAN_WIDTH_160;
+				adjusted_snr = snr +
+					wpas_channel_width_rssi_bump(
+						ies, ies_len, CHAN_WIDTH_160);
+				tmp = max_vht160_rate(adjusted_snr) + 1;
 				if (tmp > est)
 					est = tmp;
 			}
@@ -2758,6 +3044,8 @@ unsigned int wpas_get_est_tpt(const struct wpa_supplicant *wpa_s,
 			}
 		}
 
+		if (*max_cw == CHAN_WIDTH_UNKNOWN)
+			*max_cw = CHAN_WIDTH_20;
 		tmp = max_he_eht_rate(he20_table, snr, is_eht) + boost;
 		if (tmp > est)
 			est = tmp;
@@ -2767,14 +3055,26 @@ unsigned int wpas_get_est_tpt(const struct wpa_supplicant *wpa_s,
 		if (cw &
 		    (IS_2P4GHZ(freq) ? HE_PHYCAP_CHANNEL_WIDTH_SET_40MHZ_IN_2G :
 		     HE_PHYCAP_CHANNEL_WIDTH_SET_40MHZ_80MHZ_IN_5G)) {
-			tmp = max_he_eht_rate(he40_table, snr, is_eht) + boost;
+			if (*max_cw == CHAN_WIDTH_UNKNOWN ||
+			    *max_cw < CHAN_WIDTH_40)
+				*max_cw = CHAN_WIDTH_40;
+			adjusted_snr = snr + wpas_channel_width_rssi_bump(
+				ies, ies_len, CHAN_WIDTH_40);
+			tmp = max_he_eht_rate(he40_table, adjusted_snr,
+					      is_eht) + boost;
 			if (tmp > est)
 				est = tmp;
 		}
 
 		if (!IS_2P4GHZ(freq) &&
 		    (cw & HE_PHYCAP_CHANNEL_WIDTH_SET_40MHZ_80MHZ_IN_5G)) {
-			tmp = max_he_eht_rate(he80_table, snr, is_eht) + boost;
+			if (*max_cw == CHAN_WIDTH_UNKNOWN ||
+			    *max_cw < CHAN_WIDTH_80)
+				*max_cw = CHAN_WIDTH_80;
+			adjusted_snr = snr + wpas_channel_width_rssi_bump(
+				ies, ies_len, CHAN_WIDTH_80);
+			tmp = max_he_eht_rate(he80_table, adjusted_snr,
+					      is_eht) + boost;
 			if (tmp > est)
 				est = tmp;
 		}
@@ -2782,7 +3082,13 @@ unsigned int wpas_get_est_tpt(const struct wpa_supplicant *wpa_s,
 		if (!IS_2P4GHZ(freq) &&
 		    (cw & (HE_PHYCAP_CHANNEL_WIDTH_SET_160MHZ_IN_5G |
 			   HE_PHYCAP_CHANNEL_WIDTH_SET_80PLUS80MHZ_IN_5G))) {
-			tmp = max_he_eht_rate(he160_table, snr, is_eht) + boost;
+			if (*max_cw == CHAN_WIDTH_UNKNOWN ||
+			    *max_cw < CHAN_WIDTH_160)
+				*max_cw = CHAN_WIDTH_160;
+			adjusted_snr = snr + wpas_channel_width_rssi_bump(
+				ies, ies_len, CHAN_WIDTH_160);
+			tmp = max_he_eht_rate(he160_table, adjusted_snr,
+					      is_eht) + boost;
 			if (tmp > est)
 				est = tmp;
 		}
@@ -2795,7 +3101,12 @@ unsigned int wpas_get_est_tpt(const struct wpa_supplicant *wpa_s,
 		if (is_6ghz_freq(freq) &&
 		    (eht->phy_cap[EHT_PHYCAP_320MHZ_IN_6GHZ_SUPPORT_IDX] &
 		     EHT_PHYCAP_320MHZ_IN_6GHZ_SUPPORT_MASK)) {
-			tmp = max_he_eht_rate(eht320_table, snr, true);
+			if (*max_cw == CHAN_WIDTH_UNKNOWN ||
+			    *max_cw < CHAN_WIDTH_320)
+				*max_cw = CHAN_WIDTH_320;
+			adjusted_snr = snr + wpas_channel_width_rssi_bump(
+				ies, ies_len, CHAN_WIDTH_320);
+			tmp = max_he_eht_rate(eht320_table, adjusted_snr, true);
 			if (tmp > est)
 				est = tmp;
 		}
@@ -2821,8 +3132,8 @@ void scan_est_throughput(struct wpa_supplicant *wpa_s,
 
 	if (!ie_len)
 		ie_len = res->beacon_ie_len;
-	res->est_throughput =
-		wpas_get_est_tpt(wpa_s, ies, ie_len, rate, snr, res->freq);
+	res->est_throughput = wpas_get_est_tpt(wpa_s, ies, ie_len, rate, snr,
+					       res->freq, &res->max_cw);
 
 	/* TODO: channel utilization and AP load (e.g., from AP Beacon) */
 }
@@ -3045,6 +3356,7 @@ wpa_scan_clone_params(const struct wpa_driver_scan_params *src)
 	params->relative_adjust_rssi = src->relative_adjust_rssi;
 	params->p2p_include_6ghz = src->p2p_include_6ghz;
 	params->non_coloc_6ghz = src->non_coloc_6ghz;
+	params->min_probe_req_content = src->min_probe_req_content;
 	return params;
 
 failed:

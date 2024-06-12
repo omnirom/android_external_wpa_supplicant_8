@@ -378,13 +378,111 @@ static void sme_auth_handle_rrm(struct wpa_supplicant *wpa_s,
 }
 
 
+static void wpas_process_tbtt_info(struct wpa_supplicant *wpa_s, const u8 *data)
+{
+	struct wpa_bss *neigh_bss;
+	const u8 *bssid;
+	u8 bss_params;
+	u8 link_id;
+
+	/* TBTT Information field
+	 * Neighbor AP TBTT Offset[1]
+	 * BSSID[6]
+	 * Short SSID[4]
+	 * BSS parameters[1]
+	 * 20 MHz PSD[1]
+	 * MLD Parameters[3]
+	 *   B0..B7: AP MLD ID
+	 *   B7..B11: Link ID
+	 *   B12..B19: BSS Parameters Change Count
+	 *   B20: All Updates Included
+	 *   B21: Disabled Link Indication */
+
+	bssid = data + 1;
+	bss_params = data[1 + ETH_ALEN + 4];
+
+	data += 13; /* MLD Parameters */
+	link_id = *(data + 1) & 0xF;
+
+	wpa_dbg(wpa_s, MSG_DEBUG,
+		"MLD: mld ID=%u, link ID=%u, bssid=" MACSTR ", bss_params=0x%x",
+		*data, link_id, MAC2STR(bssid), bss_params);
+
+	if (*data) {
+		wpa_printf(MSG_DEBUG, "MLD: Reported link not part of MLD");
+		return;
+	}
+
+	neigh_bss = wpa_bss_get_bssid(wpa_s, bssid);
+	if (!neigh_bss) {
+		wpa_printf(MSG_DEBUG, "MLD: Neighbor not found in scan");
+		return;
+	}
+
+	if (!((bss_params & RNR_BSS_PARAM_SAME_SSID) &&
+	      (bss_params & RNR_BSS_PARAM_CO_LOCATED)) &&
+	    !wpa_scan_res_match(wpa_s, 0, neigh_bss, wpa_s->current_ssid,
+				1, 0)) {
+		wpa_printf(MSG_DEBUG,
+			   "MLD: Neighbor doesn't match current SSID - skip link");
+		return;
+	}
+
+	wpa_s->valid_links |= BIT(link_id);
+	os_memcpy(wpa_s->links[link_id].bssid, bssid, ETH_ALEN);
+	wpa_s->links[link_id].freq = neigh_bss->freq;
+}
+
+
+static void wpas_process_rnr(struct wpa_supplicant *wpa_s, const u8 *pos,
+			     size_t rnr_ie_len)
+{
+	while (rnr_ie_len > sizeof(struct ieee80211_neighbor_ap_info)) {
+		const struct ieee80211_neighbor_ap_info *ap_info =
+			(const struct ieee80211_neighbor_ap_info *) pos;
+		/* The first TBTT Information field */
+		const u8 *data = ap_info->data;
+		u8 tbtt_count;
+		size_t len;
+		int tbtt_i;
+
+		if (rnr_ie_len < sizeof(struct ieee80211_neighbor_ap_info))
+			break;
+
+		tbtt_count = (ap_info->tbtt_info_hdr >> 4) + 1;
+		len = sizeof(struct ieee80211_neighbor_ap_info) +
+			ap_info->tbtt_info_len * tbtt_count;
+
+		wpa_printf(MSG_DEBUG, "MLD: op_class=%u, channel=%u",
+			   ap_info->op_class, ap_info->channel);
+
+		if (len > rnr_ie_len)
+			break;
+
+		if (ap_info->tbtt_info_len < 16) {
+			rnr_ie_len -= len;
+			pos += len;
+			continue;
+		}
+
+		for (tbtt_i = 0; tbtt_i < tbtt_count; tbtt_i++) {
+			wpas_process_tbtt_info(wpa_s, data);
+			data += ap_info->tbtt_info_len;
+		}
+
+		rnr_ie_len -= len;
+		pos += len;
+	}
+}
+
+
 static bool wpas_ml_element(struct wpa_supplicant *wpa_s, struct wpa_bss *bss,
 			    struct wpa_ssid *ssid)
 {
 	struct wpabuf *mlbuf;
-	const u8 *rnr_ie, *pos, *rsn_ie;
+	const u8 *rnr_ie, *rsn_ie;
 	struct wpa_ie_data ie;
-	u8 ml_ie_len, rnr_ie_len;
+	u8 ml_ie_len;
 	const struct ieee80211_eht_ml *eht_ml;
 	const struct eht_ml_basic_common_info *ml_basic_common_info;
 	u8 i;
@@ -394,6 +492,7 @@ static bool wpas_ml_element(struct wpa_supplicant *wpa_s, struct wpa_bss *bss,
 			     BASIC_MULTI_LINK_CTRL_PRES_BSS_PARAM_CH_COUNT |
 			     BASIC_MULTI_LINK_CTRL_PRES_MLD_CAPA);
 	bool ret = false;
+	int rnr_idx;
 
 	if (!(wpa_s->drv_flags2 & WPA_DRIVER_FLAGS2_MLO))
 		return false;
@@ -459,69 +558,22 @@ static bool wpas_ml_element(struct wpa_supplicant *wpa_s, struct wpa_bss *bss,
 
 	wpa_s->valid_links = BIT(wpa_s->mlo_assoc_link_id);
 
-	rnr_ie = wpa_bss_get_ie(bss, WLAN_EID_REDUCED_NEIGHBOR_REPORT);
-	if (!rnr_ie) {
-		wpa_dbg(wpa_s, MSG_DEBUG, "MLD: No RNR element");
-		ret = true;
-		goto out;
-	}
+	ret = true;
 
-	rnr_ie_len = rnr_ie[1];
-	pos = rnr_ie + 2;
-
-	while (rnr_ie_len > sizeof(struct ieee80211_neighbor_ap_info)) {
-		const struct ieee80211_neighbor_ap_info *ap_info =
-			(const struct ieee80211_neighbor_ap_info *) pos;
-		const u8 *data = ap_info->data;
-		size_t len = sizeof(struct ieee80211_neighbor_ap_info) +
-			ap_info->tbtt_info_len;
-
-		wpa_printf(MSG_DEBUG, "MLD: op_class=%u, channel=%u",
-			   ap_info->op_class, ap_info->channel);
-
-		if (len > rnr_ie_len)
-			break;
-
-		if (ap_info->tbtt_info_len < 16) {
-			rnr_ie_len -= len;
-			pos += len;
-			continue;
-		}
-
-		data += 13;
-
-		wpa_printf(MSG_DEBUG, "MLD: mld ID=%u, link ID=%u",
-			   *data, *(data + 1) & 0xF);
-
-		if (*data) {
-			wpa_printf(MSG_DEBUG,
-				   "MLD: Reported link not part of MLD");
-		} else {
-			struct wpa_bss *neigh_bss =
-				wpa_bss_get_bssid(wpa_s, ap_info->data + 1);
-			u8 link_id = *(data + 1) & 0xF;
-
-			if (neigh_bss) {
-				if (wpa_scan_res_match(wpa_s, 0, neigh_bss,
-						       wpa_s->current_ssid,
-						       1, 0)) {
-					wpa_s->valid_links |= BIT(link_id);
-					os_memcpy(wpa_s->links[link_id].bssid,
-						  ap_info->data + 1, ETH_ALEN);
-					wpa_s->links[link_id].freq =
-						neigh_bss->freq;
-				} else {
-					wpa_printf(MSG_DEBUG,
-						   "MLD: Neighbor doesn't match current SSID - skip link");
-				}
-			} else {
-				wpa_printf(MSG_DEBUG,
-					   "MLD: Neighbor not found in scan");
+	/* Process all Reduced Neighbor Report elements */
+	for (rnr_idx = 1; ; rnr_idx++) {
+		rnr_ie = wpa_bss_get_ie_nth(bss,
+					    WLAN_EID_REDUCED_NEIGHBOR_REPORT,
+					    rnr_idx);
+		if (!rnr_ie) {
+			if (rnr_idx == 0) {
+				wpa_dbg(wpa_s, MSG_DEBUG,
+					"MLD: No RNR element");
+				goto out;
 			}
+			break;
 		}
-
-		rnr_ie_len -= len;
-		pos += len;
+		wpas_process_rnr(wpa_s, rnr_ie + 2, rnr_ie[1]);
 	}
 
 	wpa_printf(MSG_DEBUG, "MLD: valid_links=0x%x", wpa_s->valid_links);
@@ -534,10 +586,18 @@ static bool wpas_ml_element(struct wpa_supplicant *wpa_s, struct wpa_bss *bss,
 			   i, MAC2STR(wpa_s->links[i].bssid));
 	}
 
-	ret = true;
 out:
 	wpabuf_free(mlbuf);
 	return ret;
+}
+
+
+static void wpas_ml_handle_removed_links(struct wpa_supplicant *wpa_s,
+					 struct wpa_bss *bss)
+{
+	u16 removed_links = wpa_bss_parse_reconf_ml_element(wpa_s, bss);
+
+	wpa_s->valid_links &= ~removed_links;
 }
 
 
@@ -639,6 +699,7 @@ static void sme_send_authentication(struct wpa_supplicant *wpa_s,
 		params.mld = true;
 		params.mld_link_id = wpa_s->mlo_assoc_link_id;
 		params.ap_mld_addr = wpa_s->ap_mld_addr;
+		wpas_ml_handle_removed_links(wpa_s, bss);
 	}
 
 	if (wpa_s->sme.ssid_len != params.ssid_len ||
@@ -731,7 +792,7 @@ static void sme_send_authentication(struct wpa_supplicant *wpa_s,
 					    bss->bssid,
 					    wpa_s->current_ssid,
 					    try_opportunistic, cache_id,
-					    0) == 0)
+					    0, false) == 0)
 			eapol_sm_notify_pmkid_attempt(wpa_s->eapol);
 		wpa_s->sme.assoc_req_ie_len = sizeof(wpa_s->sme.assoc_req_ie);
 		if (wpa_supplicant_set_suites(wpa_s, bss, ssid,
@@ -920,7 +981,7 @@ static void sme_send_authentication(struct wpa_supplicant *wpa_s,
 		wpa_drv_get_ext_capa(wpa_s, WPA_IF_STATION);
 
 	ext_capab_len = wpas_build_ext_capab(wpa_s, ext_capab,
-					     sizeof(ext_capab));
+					     sizeof(ext_capab), bss);
 	if (ext_capab_len > 0) {
 		u8 *pos = wpa_s->sme.assoc_req_ie;
 		if (wpa_s->sme.assoc_req_ie_len > 0 && pos[0] == WLAN_EID_RSN)
@@ -1041,7 +1102,7 @@ static void sme_send_authentication(struct wpa_supplicant *wpa_s,
 				    NULL,
 				    wpa_key_mgmt_sae(wpa_s->key_mgmt) ?
 				    wpa_s->key_mgmt :
-				    (int) WPA_KEY_MGMT_SAE) == 0) {
+				    (int) WPA_KEY_MGMT_SAE, false) == 0) {
 		wpa_dbg(wpa_s, MSG_DEBUG,
 			"PMKSA cache entry found - try to use PMKSA caching instead of new SAE authentication");
 		wpa_sm_set_pmk_from_pmksa(wpa_s->wpa);
@@ -1139,7 +1200,7 @@ static void sme_send_authentication(struct wpa_supplicant *wpa_s,
 					    bss->bssid,
 					    ssid, 0,
 					    wpa_bss_get_fils_cache_id(bss),
-					    0) == 0)
+					    0, false) == 0)
 			wpa_printf(MSG_DEBUG,
 				   "SME: Try to use FILS with PMKSA caching");
 		resp = fils_build_auth(wpa_s->wpa, ssid->fils_dh_group, md);
@@ -3087,7 +3148,7 @@ static void sme_obss_scan_timeout(void *eloop_ctx, void *timeout_ctx)
 	params.low_priority = 1;
 	wpa_printf(MSG_DEBUG, "SME OBSS: Request an OBSS scan");
 
-	if (wpa_supplicant_trigger_scan(wpa_s, &params))
+	if (wpa_supplicant_trigger_scan(wpa_s, &params, true, false))
 		wpa_printf(MSG_DEBUG, "SME OBSS: Failed to trigger scan");
 	else
 		wpa_s->sme.sched_obss_scan = 1;

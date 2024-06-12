@@ -463,12 +463,29 @@ void wpas_notify_network_removed(struct wpa_supplicant *wpa_s,
 		wpa_s->last_ssid = NULL;
 	if (wpa_s->current_ssid == ssid)
 		wpa_s->current_ssid = NULL;
+	if (wpa_s->ml_connect_probe_ssid == ssid) {
+		wpa_s->ml_connect_probe_ssid = NULL;
+		wpa_s->ml_connect_probe_bss = NULL;
+	}
 #if defined(CONFIG_SME) && defined(CONFIG_SAE)
 	if (wpa_s->sme.ext_auth_wpa_ssid == ssid)
 		wpa_s->sme.ext_auth_wpa_ssid = NULL;
 #endif /* CONFIG_SME && CONFIG_SAE */
-	if (wpa_s->wpa)
+	if (wpa_s->wpa) {
+		if ((wpa_key_mgmt_sae(ssid->key_mgmt) &&
+		     (wpa_s->drv_flags2 & WPA_DRIVER_FLAGS2_SAE_OFFLOAD_STA)) ||
+		    ((ssid->key_mgmt & WPA_KEY_MGMT_OWE) &&
+		     (wpa_s->drv_flags2 & WPA_DRIVER_FLAGS2_OWE_OFFLOAD_STA))) {
+			/* For cases when PMK is generated at the driver */
+			struct wpa_pmkid_params params;
+
+			os_memset(&params, 0, sizeof(params));
+			params.ssid = ssid->ssid;
+			params.ssid_len = ssid->ssid_len;
+			wpa_drv_remove_pmkid(wpa_s, &params);
+		}
 		wpa_sm_pmksa_cache_flush(wpa_s->wpa, ssid);
+	}
 	if (!ssid->p2p_group && wpa_s->global->p2p_group_formation != wpa_s &&
 	    !wpa_s->p2p_mgmt) {
 		wpas_dbus_unregister_network(wpa_s, ssid->id);
@@ -1126,6 +1143,8 @@ void wpas_notify_mesh_peer_connected(struct wpa_supplicant *wpa_s,
 	if (wpa_s->p2p_mgmt)
 		return;
 
+	wpa_msg(wpa_s, MSG_INFO, MESH_PEER_CONNECTED MACSTR,
+		MAC2STR(peer_addr));
 	wpas_dbus_signal_mesh_peer_connected(wpa_s, peer_addr);
 }
 
@@ -1136,6 +1155,8 @@ void wpas_notify_mesh_peer_disconnected(struct wpa_supplicant *wpa_s,
 	if (wpa_s->p2p_mgmt)
 		return;
 
+	wpa_msg(wpa_s, MSG_INFO, MESH_PEER_DISCONNECTED MACSTR,
+		MAC2STR(peer_addr));
 	wpas_dbus_signal_mesh_peer_disconnected(wpa_s, peer_addr, reason_code);
 }
 
