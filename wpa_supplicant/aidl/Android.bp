@@ -36,7 +36,7 @@ cc_library_static {
     ],
     soc_specific: true,
     shared_libs: [
-        "android.hardware.wifi.supplicant-V3-ndk",
+        "android.hardware.wifi.supplicant-V4-ndk",
         "android.system.keystore2-V1-ndk",
         "libbinder_ndk",
         "libbase",
@@ -59,9 +59,10 @@ cc_library_static {
     ],
 }
 
-filegroup {
+vintf_fragment {
     name: "android.hardware.wifi.supplicant.xml",
-    srcs: ["android.hardware.wifi.supplicant.xml"],
+    src: "android.hardware.wifi.supplicant.xml",
+    soc_specific: true,
 }
 
 soong_config_module_type {

@@ -104,6 +104,7 @@ struct wpa_sm_ctx {
 #endif /* CONFIG_PASN */
 	void (*notify_pmksa_cache_entry)(void *ctx,
 					 struct rsn_pmksa_cache_entry *entry);
+	void (*ssid_verified)(void *ctx);
 };
 
 
@@ -132,6 +133,10 @@ enum wpa_sm_conf_params {
 	WPA_PARAM_OCI_FREQ_FT_ASSOC,
 	WPA_PARAM_OCI_FREQ_FILS_ASSOC,
 	WPA_PARAM_DISABLE_EAPOL_G2_TX,
+	WPA_PARAM_ENCRYPT_EAPOL_M2,
+	WPA_PARAM_ENCRYPT_EAPOL_M4,
+	WPA_PARAM_FT_PREPEND_PMKID,
+	WPA_PARAM_SSID_PROTECTION,
 };
 
 struct rsn_supp_config {
@@ -185,6 +190,7 @@ void wpa_sm_set_pmk_from_pmksa(struct wpa_sm *sm);
 void wpa_sm_set_fast_reauth(struct wpa_sm *sm, int fast_reauth);
 void wpa_sm_set_scard_ctx(struct wpa_sm *sm, void *scard_ctx);
 void wpa_sm_set_config(struct wpa_sm *sm, struct rsn_supp_config *config);
+void wpa_sm_set_ssid(struct wpa_sm *sm, const u8 *ssid, size_t ssid_len);
 void wpa_sm_set_own_addr(struct wpa_sm *sm, const u8 *addr);
 void wpa_sm_set_ifname(struct wpa_sm *sm, const char *ifname,
 		       const char *bridge_ifname);
@@ -605,6 +611,8 @@ extern unsigned int tdls_testing;
 
 int wpa_wnmsleep_install_key(struct wpa_sm *sm, u8 subelem_id, u8 *buf);
 void wpa_sm_set_test_assoc_ie(struct wpa_sm *sm, struct wpabuf *buf);
+void wpa_sm_set_test_eapol_m2_elems(struct wpa_sm *sm, struct wpabuf *buf);
+void wpa_sm_set_test_eapol_m4_elems(struct wpa_sm *sm, struct wpabuf *buf);
 const u8 * wpa_sm_get_anonce(struct wpa_sm *sm);
 unsigned int wpa_sm_get_key_mgmt(struct wpa_sm *sm);
 

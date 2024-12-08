@@ -23,6 +23,7 @@ struct ieee802_11_elems;
 struct sae_pk;
 struct sae_pt;
 struct sae_password_entry;
+struct mld_info;
 
 int ieee802_11_mgmt(struct hostapd_data *hapd, const u8 *buf, size_t len,
 		    struct hostapd_frame_info *fi);
@@ -88,8 +89,14 @@ void hostapd_get_eht_capab(struct hostapd_data *hapd,
 			   const struct ieee80211_eht_capabilities *src,
 			   struct ieee80211_eht_capabilities *dest,
 			   size_t len);
-u8 * hostapd_eid_eht_basic_ml(struct hostapd_data *hapd, u8 *eid,
-			      struct sta_info *info, bool include_mld_id);
+u8 * hostapd_eid_eht_ml_beacon(struct hostapd_data *hapd,
+			       struct mld_info *mld_info,
+			       u8 *eid, bool include_mld_id);
+u8 * hostapd_eid_eht_ml_assoc(struct hostapd_data *hapd, struct sta_info *info,
+			      u8 *eid);
+size_t hostapd_eid_eht_ml_beacon_len(struct hostapd_data *hapd,
+				     struct mld_info *info,
+				     bool include_mld_id);
 struct wpabuf * hostapd_ml_auth_resp(struct hostapd_data *hapd);
 const u8 * hostapd_process_ml_auth(struct hostapd_data *hapd,
 				   const struct ieee80211_mgmt *mgmt,
@@ -97,6 +104,9 @@ const u8 * hostapd_process_ml_auth(struct hostapd_data *hapd,
 u16 hostapd_process_ml_assoc_req(struct hostapd_data *hapd,
 				 struct ieee802_11_elems *elems,
 				 struct sta_info *sta);
+int hostapd_process_ml_assoc_req_addr(struct hostapd_data *hapd,
+				      const u8 *basic_mle, size_t basic_mle_len,
+				      u8 *mld_addr);
 int hostapd_get_aid(struct hostapd_data *hapd, struct sta_info *sta);
 u16 copy_sta_ht_capab(struct hostapd_data *hapd, struct sta_info *sta,
 		      const u8 *ht_capab);
@@ -119,11 +129,10 @@ u16 copy_sta_he_6ghz_capab(struct hostapd_data *hapd, struct sta_info *sta,
 			   const u8 *he_6ghz_capab);
 int hostapd_get_he_twt_responder(struct hostapd_data *hapd,
 				 enum ieee80211_op_mode mode);
+bool hostapd_get_ht_vht_twt_responder(struct hostapd_data *hapd);
 u8 * hostapd_eid_cca(struct hostapd_data *hapd, u8 *eid);
 void hostapd_tx_status(struct hostapd_data *hapd, const u8 *addr,
 		       const u8 *buf, size_t len, int ack);
-void hostapd_eapol_tx_status(struct hostapd_data *hapd, const u8 *dst,
-			     const u8 *data, size_t len, int ack);
 void ieee802_11_rx_from_unknown(struct hostapd_data *hapd, const u8 *src,
 				int wds);
 u8 * hostapd_eid_assoc_comeback_time(struct hostapd_data *hapd,
@@ -138,7 +147,8 @@ u8 * hostapd_eid_time_adv(struct hostapd_data *hapd, u8 *eid);
 u8 * hostapd_eid_time_zone(struct hostapd_data *hapd, u8 *eid);
 int hostapd_update_time_adv(struct hostapd_data *hapd);
 void hostapd_client_poll_ok(struct hostapd_data *hapd, const u8 *addr);
-u8 * hostapd_eid_bss_max_idle_period(struct hostapd_data *hapd, u8 *eid);
+u8 * hostapd_eid_bss_max_idle_period(struct hostapd_data *hapd, u8 *eid,
+				     u16 value);
 
 int auth_sae_init_committed(struct hostapd_data *hapd, struct sta_info *sta);
 #ifdef CONFIG_SAE
@@ -217,8 +227,10 @@ void auth_sae_process_commit(void *eloop_ctx, void *user_ctx);
 u8 * hostapd_eid_rsnxe(struct hostapd_data *hapd, u8 *eid, size_t len);
 u16 check_ext_capab(struct hostapd_data *hapd, struct sta_info *sta,
 		    const u8 *ext_capab_ie, size_t ext_capab_ie_len);
-size_t hostapd_eid_rnr_len(struct hostapd_data *hapd, u32 type);
-u8 * hostapd_eid_rnr(struct hostapd_data *hapd, u8 *eid, u32 type);
+size_t hostapd_eid_rnr_len(struct hostapd_data *hapd, u32 type,
+			   bool include_mld_params);
+u8 * hostapd_eid_rnr(struct hostapd_data *hapd, u8 *eid, u32 type,
+		     bool include_mld_params);
 int ieee802_11_set_radius_info(struct hostapd_data *hapd, struct sta_info *sta,
 			       int res, struct radius_sta *info);
 size_t hostapd_eid_eht_capab_len(struct hostapd_data *hapd,
@@ -238,12 +250,18 @@ u8 * hostapd_eid_mbssid(struct hostapd_data *hapd, u8 *eid, u8 *end,
 			u8 **elem_offset,
 			const u8 *known_bss, size_t known_bss_len, u8 *rnr_eid,
 			u8 *rnr_count, u8 **rnr_offset, size_t rnr_len);
-void punct_update_legacy_bw(u16 bitmap, u8 pri_chan,
-			    enum oper_chan_width *width, u8 *seg0, u8 *seg1);
 bool hostapd_is_mld_ap(struct hostapd_data *hapd);
 const char * sae_get_password(struct hostapd_data *hapd,
 			      struct sta_info *sta, const char *rx_id,
 			      struct sae_password_entry **pw_entry,
 			      struct sae_pt **s_pt, const struct sae_pk **s_pk);
+struct sta_info * hostapd_ml_get_assoc_sta(struct hostapd_data *hapd,
+					   struct sta_info *sta,
+					   struct hostapd_data **assoc_hapd);
+int hostapd_process_assoc_ml_info(struct hostapd_data *hapd,
+				  struct sta_info *sta,
+				  const u8 *ies, size_t ies_len,
+				  bool reassoc, int tx_link_status,
+				  bool offload);
 
 #endif /* IEEE802_11_H */

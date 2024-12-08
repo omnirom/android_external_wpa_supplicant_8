@@ -10,6 +10,12 @@
 #define AIDL_RETURN_UTIL_H_
 
 #include <aidl/android/hardware/wifi/supplicant/SupplicantStatusCode.h>
+#include <mutex>
+
+namespace {
+	// Mutex serializes requests when this process is called by multiple clients
+	std::mutex aidl_return_mutex;
+}
 
 namespace aidl {
 namespace android {
@@ -33,6 +39,7 @@ template <typename ObjT, typename WorkFuncT, typename... Args>
 	ObjT* obj, SupplicantStatusCode status_code_if_invalid, WorkFuncT&& work,
 	Args&&... args)
 {
+	std::lock_guard<std::mutex> guard(aidl_return_mutex);
 	if (obj->isValid()) {
 		return (obj->*work)(std::forward<Args>(args)...);
 	} else {
@@ -47,6 +54,7 @@ template <typename ObjT, typename WorkFuncT, typename ReturnT, typename... Args>
 	ObjT* obj, SupplicantStatusCode status_code_if_invalid, WorkFuncT&& work,
 	ReturnT* ret_val, Args&&... args)
 {
+	std::lock_guard<std::mutex> guard(aidl_return_mutex);
 	if (obj->isValid()) {
 		auto call_pair = (obj->*work)(std::forward<Args>(args)...);
 		*ret_val = call_pair.first;

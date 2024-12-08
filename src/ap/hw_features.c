@@ -107,9 +107,7 @@ int hostapd_get_hw_features(struct hostapd_iface *iface)
 		 */
 		orig_mode_valid = true;
 		mode = iface->current_mode->mode;
-		is_6ghz = mode == HOSTAPD_MODE_IEEE80211A &&
-			iface->current_mode->num_channels > 0 &&
-			is_6ghz_freq(iface->current_mode->channels[0].freq);
+		is_6ghz = iface->current_mode->is_6ghz;
 		iface->current_mode = NULL;
 	}
 	hostapd_free_hw_features(iface->hw_features, iface->num_hw_features);
@@ -508,6 +506,12 @@ static void ap_ht40_scan_retry(void *eloop_data, void *user_data)
 	else
 		ieee80211n_scan_channels_5g(iface, &params);
 
+	params.link_id = -1;
+#ifdef CONFIG_IEEE80211BE
+	if (iface->bss[0]->conf->mld_ap)
+		params.link_id = iface->bss[0]->mld_link_id;
+#endif /* CONFIG_IEEE80211BE */
+
 	ret = hostapd_driver_scan(iface->bss[0], &params);
 	iface->num_ht40_scan_tries++;
 	os_free(params.freqs);
@@ -523,6 +527,7 @@ static void ap_ht40_scan_retry(void *eloop_data, void *user_data)
 
 	if (ret == 0) {
 		iface->scan_cb = ieee80211n_check_scan;
+		iface->bss[0]->scan_cookie = params.scan_cookie;
 		return;
 	}
 
@@ -558,6 +563,11 @@ static int ieee80211n_check_40mhz(struct hostapd_iface *iface)
 	else
 		ieee80211n_scan_channels_5g(iface, &params);
 
+	params.link_id = -1;
+#ifdef CONFIG_IEEE80211BE
+	if (iface->bss[0]->conf->mld_ap)
+		params.link_id = iface->bss[0]->mld_link_id;
+#endif /* CONFIG_IEEE80211BE */
 	ret = hostapd_driver_scan(iface->bss[0], &params);
 	os_free(params.freqs);
 
@@ -579,6 +589,7 @@ static int ieee80211n_check_40mhz(struct hostapd_iface *iface)
 	}
 
 	iface->scan_cb = ieee80211n_check_scan;
+	iface->bss[0]->scan_cookie = params.scan_cookie;
 	return 1;
 }
 
@@ -1001,7 +1012,7 @@ static int hostapd_is_usable_chans(struct hostapd_iface *iface)
 {
 	int secondary_freq;
 	struct hostapd_channel_data *pri_chan;
-	int err;
+	int err, err2;
 
 	if (!iface->current_mode)
 		return 0;
@@ -1044,15 +1055,15 @@ static int hostapd_is_usable_chans(struct hostapd_iface *iface)
 
 	/* Both HT40+ and HT40- are set, pick a valid secondary channel */
 	secondary_freq = iface->freq + 20;
-	err = hostapd_is_usable_chan(iface, secondary_freq, 0);
-	if (err > 0 && (pri_chan->allowed_bw & HOSTAPD_CHAN_WIDTH_40P)) {
+	err2 = hostapd_is_usable_chan(iface, secondary_freq, 0);
+	if (err2 > 0 && (pri_chan->allowed_bw & HOSTAPD_CHAN_WIDTH_40P)) {
 		iface->conf->secondary_channel = 1;
 		return 1;
 	}
 
 	secondary_freq = iface->freq - 20;
-	err = hostapd_is_usable_chan(iface, secondary_freq, 0);
-	if (err > 0 && (pri_chan->allowed_bw & HOSTAPD_CHAN_WIDTH_40M)) {
+	err2 = hostapd_is_usable_chan(iface, secondary_freq, 0);
+	if (err2 > 0 && (pri_chan->allowed_bw & HOSTAPD_CHAN_WIDTH_40M)) {
 		iface->conf->secondary_channel = -1;
 		return 1;
 	}
@@ -1070,9 +1081,7 @@ static bool skip_mode(struct hostapd_iface *iface,
 		return true;
 
 	if (is_6ghz_op_class(iface->conf->op_class) && iface->freq == 0 &&
-	    (mode->mode != HOSTAPD_MODE_IEEE80211A ||
-	     mode->num_channels == 0 ||
-	     !is_6ghz_freq(mode->channels[0].freq)))
+	    !mode->is_6ghz)
 		return true;
 
 	return false;

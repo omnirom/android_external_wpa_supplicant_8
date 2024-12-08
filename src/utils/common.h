@@ -9,6 +9,7 @@
 #ifndef COMMON_H
 #define COMMON_H
 
+#include "includes.h"
 #include "os.h"
 
 #if defined(__linux__) || defined(__GLIBC__)
@@ -441,6 +442,13 @@ void perror(const char *s);
 #define BIT(x) (1U << (x))
 #endif
 
+#ifndef MIN
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+#endif
+#ifndef MAX
+#define MAX(a, b) (((a) > (b)) ? (a) : (b))
+#endif
+
 /*
  * Definitions for sparse validation
  * (http://kernel.org/pub/linux/kernel/people/josh/sparse/)
@@ -543,6 +551,11 @@ static inline int is_multicast_ether_addr(const u8 *a)
 	return a[0] & 0x01;
 }
 
+static inline bool ether_addr_equal(const u8 *a, const u8 *b)
+{
+	return os_memcmp(a, b, ETH_ALEN) == 0;
+}
+
 #define broadcast_ether_addr (const u8 *) "\xff\xff\xff\xff\xff\xff"
 
 #include "wpa_debug.h"
@@ -565,6 +578,7 @@ size_t int_array_len(const int *a);
 void int_array_concat(int **res, const int *a);
 void int_array_sort_unique(int *a);
 void int_array_add_unique(int **res, int a);
+bool int_array_includes(int *arr, int val);
 
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 
@@ -586,6 +600,18 @@ int str_starts(const char *str, const char *start);
 
 u8 rssi_to_rcpi(int rssi);
 char * get_param(const char *cmd, const char *param);
+
+#define for_each_link(__links, __i)                            \
+	for ((__i) = 0; (__i) < MAX_NUM_MLD_LINKS; (__i)++)    \
+		if ((__links) & BIT(__i))
+
+/* Iterate all links, or, if no link is defined, iterate given index */
+#define for_each_link_default(_links, _i, _def_idx)	\
+	for ((_i) = (_links) ? 0 : (_def_idx);		\
+	     (_i) < MAX_NUM_MLD_LINKS ||		\
+		     (!(_links) && (_i) == (_def_idx));	\
+	     (_i)++)					\
+		if (!(_links) || (_links) & BIT(_i))
 
 void forced_memzero(void *ptr, size_t len);
 

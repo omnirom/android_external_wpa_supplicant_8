@@ -1215,7 +1215,7 @@ ieee802_1x_mka_decode_potential_peer_body(
 			/* My message id is used by other participant */
 			if (peer_mn > participant->mn &&
 			    !reset_participant_mi(participant))
-				wpa_printf(MSG_DEBUG, "KaY: Could not update mi");
+				wpa_printf(MSG_DEBUG, "KaY: Could not update MI");
 			continue;
 		}
 	}
@@ -2560,7 +2560,7 @@ ieee802_1x_participant_send_mkpdu(
 	}
 
 	if (ieee802_1x_kay_encode_mkpdu(participant, buf)) {
-		wpa_printf(MSG_ERROR, "KaY: encode mkpdu fail");
+		wpa_printf(MSG_ERROR, "KaY: encode MKPDU fail");
 		return -1;
 	}
 
@@ -2628,9 +2628,7 @@ static void ieee802_1x_participant_timer(void *eloop_ctx, void *timeout_ctx)
 			      struct ieee802_1x_kay_peer, list) {
 		if (now.sec > peer->expire) {
 			wpa_printf(MSG_DEBUG, "KaY: Live peer removed");
-			wpa_hexdump(MSG_DEBUG, "\tMI: ", peer->mi,
-				    sizeof(peer->mi));
-			wpa_printf(MSG_DEBUG, "\tMN: %d", peer->mn);
+			ieee802_1x_kay_dump_peer(peer);
 			dl_list_for_each_safe(rxsc, pre_rxsc,
 					      &participant->rxsc_list,
 					      struct receive_sc, list) {
@@ -2659,10 +2657,10 @@ static void ieee802_1x_participant_timer(void *eloop_ctx, void *timeout_ctx)
 	if (key_server_removed) {
 		if (!reset_participant_mi(participant))
 			wpa_printf(MSG_WARNING,
-				   "KaY: Could not update mi on key server removal");
+				   "KaY: Could not update MI on key server removal");
 		else
 			wpa_printf(MSG_DEBUG,
-				   "KaY: Update mi on key server removal");
+				   "KaY: Update MI on key server removal");
 	}
 
 	if (lp_changed) {
@@ -2706,9 +2704,7 @@ static void ieee802_1x_participant_timer(void *eloop_ctx, void *timeout_ctx)
 			      struct ieee802_1x_kay_peer, list) {
 		if (now.sec > peer->expire) {
 			wpa_printf(MSG_DEBUG, "KaY: Potential peer removed");
-			wpa_hexdump(MSG_DEBUG, "\tMI: ", peer->mi,
-				    sizeof(peer->mi));
-			wpa_printf(MSG_DEBUG, "\tMN: %d", peer->mn);
+			ieee802_1x_kay_dump_peer(peer);
 			dl_list_del(&peer->list);
 			os_free(peer);
 		}
@@ -3165,7 +3161,7 @@ static int ieee802_1x_kay_mkpdu_validity_check(struct ieee802_1x_kay *kay,
 		   be_to_host16(eth_hdr->ethertype));
 
 	/* the destination address shall not be an individual address */
-	if (os_memcmp(eth_hdr->dest, pae_group_addr, ETH_ALEN) != 0) {
+	if (!ether_addr_equal(eth_hdr->dest, pae_group_addr)) {
 		wpa_printf(MSG_DEBUG,
 			   "KaY: ethernet destination address is not PAE group address");
 		return -1;
@@ -3413,7 +3409,7 @@ static int ieee802_1x_kay_decode_mkpdu(struct ieee802_1x_kay *kay,
 			   "KaY: Discarding Rx MKPDU: decode of parameter set type (%d) failed",
 			   MKA_SAK_USE);
 		if (!reset_participant_mi(participant))
-			wpa_printf(MSG_DEBUG, "KaY: Could not update mi");
+			wpa_printf(MSG_DEBUG, "KaY: Could not update MI");
 		else
 			wpa_printf(MSG_DEBUG,
 				   "KaY: Selected a new random MI: %s",
@@ -3630,7 +3626,7 @@ ieee802_1x_kay_init(struct ieee802_1x_kay_ctx *ctx, enum macsec_policy policy,
 		goto error;
 	}
 
-	wpa_printf(MSG_DEBUG, "KaY: secy init macsec done");
+	wpa_printf(MSG_DEBUG, "KaY: SecY init MACsec done");
 
 	/* init CP */
 	kay->cp = ieee802_1x_cp_sm_init(kay);
@@ -3721,7 +3717,7 @@ ieee802_1x_kay_create_mka(struct ieee802_1x_kay *kay,
 		   kay->if_name, mode_txt(mode), yes_no(is_authenticator));
 
 	if (!kay || !ckn || !cak) {
-		wpa_printf(MSG_ERROR, "KaY: ckn or cak is null");
+		wpa_printf(MSG_ERROR, "KaY: CKN or CAK is null");
 		return NULL;
 	}
 

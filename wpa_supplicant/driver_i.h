@@ -128,7 +128,7 @@ static inline int wpa_drv_stop_sched_scan(struct wpa_supplicant *wpa_s)
 }
 
 struct wpa_scan_results *
-wpa_drv_get_scan_results2(struct wpa_supplicant *wpa_s);
+wpa_drv_get_scan_results(struct wpa_supplicant *wpa_s, const u8 *bssid);
 
 static inline int wpa_drv_get_bssid(struct wpa_supplicant *wpa_s, u8 *bssid)
 {
@@ -339,14 +339,6 @@ static inline int wpa_drv_update_ft_ies(struct wpa_supplicant *wpa_s,
 	if (wpa_s->driver->update_ft_ies)
 		return wpa_s->driver->update_ft_ies(wpa_s->drv_priv, md,
 						    ies, ies_len);
-	return -1;
-}
-
-static inline int wpa_drv_set_ap(struct wpa_supplicant *wpa_s,
-				 struct wpa_driver_ap_params *params)
-{
-	if (wpa_s->driver->set_ap)
-		return wpa_s->driver->set_ap(wpa_s->drv_priv, params);
 	return -1;
 }
 
@@ -1155,8 +1147,10 @@ static inline int wpa_drv_set_secure_ranging_ctx(struct wpa_supplicant *wpa_s,
 {
 	struct secure_ranging_params params;
 
+	/* Configure secure ranging context only to the drivers that support it.
+	 */
 	if (!wpa_s->driver->set_secure_ranging_ctx)
-		return -1;
+		return 0;
 
 	os_memset(&params, 0, sizeof(params));
 	params.action = action;

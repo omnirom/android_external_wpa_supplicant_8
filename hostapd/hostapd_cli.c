@@ -21,7 +21,7 @@
 
 static const char *const hostapd_cli_version =
 "hostapd_cli v" VERSION_STR "\n"
-"Copyright (c) 2004-2022, Jouni Malinen <j@w1.fi> and contributors";
+"Copyright (c) 2004-2024, Jouni Malinen <j@w1.fi> and contributors";
 
 static struct wpa_ctrl *ctrl_conn;
 static int hostapd_cli_quit = 0;
@@ -1168,6 +1168,15 @@ static int hostapd_cli_cmd_fst(struct wpa_ctrl *ctrl, int argc, char *argv[])
 #endif /* CONFIG_FST */
 
 
+#ifdef CONFIG_IEEE80211AX
+static int hostapd_cli_cmd_color_change(struct wpa_ctrl *ctrl,
+					int argc, char *argv[])
+{
+	return hostapd_cli_cmd(ctrl, "COLOR_CHANGE", 1, argc, argv);
+}
+#endif /* CONFIG_IEEE80211AX */
+
+
 static int hostapd_cli_cmd_chan_switch(struct wpa_ctrl *ctrl,
 				       int argc, char *argv[])
 {
@@ -1215,14 +1224,14 @@ static int hostapd_cli_cmd_notify_cw_change(struct wpa_ctrl *ctrl,
 
 
 static int hostapd_cli_cmd_enable(struct wpa_ctrl *ctrl, int argc,
-				      char *argv[])
+				  char *argv[])
 {
 	return wpa_ctrl_command(ctrl, "ENABLE");
 }
 
 
 static int hostapd_cli_cmd_reload(struct wpa_ctrl *ctrl, int argc,
-				      char *argv[])
+				  char *argv[])
 {
 	return wpa_ctrl_command(ctrl, "RELOAD");
 }
@@ -1235,17 +1244,45 @@ static int hostapd_cli_cmd_reload_bss(struct wpa_ctrl *ctrl, int argc,
 }
 
 
+static int hostapd_cli_cmd_reload_config(struct wpa_ctrl *ctrl, int argc,
+					 char *argv[])
+{
+	return wpa_ctrl_command(ctrl, "RELOAD_CONFIG");
+}
+
+
 static int hostapd_cli_cmd_disable(struct wpa_ctrl *ctrl, int argc,
-				      char *argv[])
+				   char *argv[])
 {
 	return wpa_ctrl_command(ctrl, "DISABLE");
 }
 
 
-static int hostapd_cli_cmd_update_beacon(struct wpa_ctrl *ctrl, int argc,
+static int hostapd_cli_cmd_enable_mld(struct wpa_ctrl *ctrl, int argc,
 				      char *argv[])
 {
+	return wpa_ctrl_command(ctrl, "ENABLE_MLD");
+}
+
+
+static int hostapd_cli_cmd_disable_mld(struct wpa_ctrl *ctrl, int argc,
+				       char *argv[])
+{
+	return wpa_ctrl_command(ctrl, "DISABLE_MLD");
+}
+
+
+static int hostapd_cli_cmd_update_beacon(struct wpa_ctrl *ctrl, int argc,
+					 char *argv[])
+{
 	return wpa_ctrl_command(ctrl, "UPDATE_BEACON");
+}
+
+
+static int hostapd_cli_cmd_stop_ap(struct wpa_ctrl *ctrl, int argc,
+				   char *argv[])
+{
+	return wpa_ctrl_command(ctrl, "STOP_AP");
 }
 
 
@@ -1577,11 +1614,36 @@ static int hostapd_cli_cmd_req_beacon(struct wpa_ctrl *ctrl, int argc,
 }
 
 
+static int hostapd_cli_cmd_req_link_measurement(struct wpa_ctrl *ctrl, int argc,
+						char *argv[])
+{
+	return hostapd_cli_cmd(ctrl, "REQ_LINK_MEASUREMENT", 1, argc, argv);
+}
+
+
 static int hostapd_cli_cmd_reload_wpa_psk(struct wpa_ctrl *ctrl, int argc,
 					  char *argv[])
 {
 	return wpa_ctrl_command(ctrl, "RELOAD_WPA_PSK");
 }
+
+
+#ifdef CONFIG_IEEE80211R_AP
+
+static int hostapd_cli_cmd_get_rxkhs(struct wpa_ctrl *ctrl, int argc,
+				     char *argv[])
+{
+	return wpa_ctrl_command(ctrl, "GET_RXKHS");
+}
+
+
+static int hostapd_cli_cmd_reload_rxkhs(struct wpa_ctrl *ctrl, int argc,
+					char *argv[])
+{
+	return wpa_ctrl_command(ctrl, "RELOAD_RXKHS");
+}
+
+#endif /* CONFIG_IEEE80211R_AP */
 
 
 #ifdef ANDROID
@@ -1693,6 +1755,11 @@ static const struct hostapd_cli_cmd hostapd_cli_commands[] = {
 	  "<cs_count> <freq> [sec_channel_offset=] [center_freq1=]\n"
 	  "  [center_freq2=] [bandwidth=] [blocktx] [ht|vht]\n"
 	  "  = initiate channel switch announcement" },
+#ifdef CONFIG_IEEE80211AX
+	{ "color_change", hostapd_cli_cmd_color_change, NULL,
+	  "<color> = initiate BSS color change to set the specified color\n"
+	  "Value 0 will disable the color.\n"},
+#endif /* CONFIG_IEEE80211AX */
 	{ "notify_cw_change", hostapd_cli_cmd_notify_cw_change, NULL,
 	  "<channel_width> = 0 - 20 MHz, 1 - 40 MHz, 2 - 80 MHz, 3 - 160 MHz" },
 	{ "hs20_wnm_notif", hostapd_cli_cmd_hs20_wnm_notif, NULL,
@@ -1710,10 +1777,18 @@ static const struct hostapd_cli_cmd hostapd_cli_commands[] = {
 	  "= reload configuration for current interface" },
 	{ "reload_bss", hostapd_cli_cmd_reload_bss, NULL,
 	  "= reload configuration for current BSS" },
+	{ "reload_config", hostapd_cli_cmd_reload_config, NULL,
+	  "= reload configuration for current interface" },
 	{ "disable", hostapd_cli_cmd_disable, NULL,
 	  "= disable hostapd on current interface" },
+	{ "enable_mld", hostapd_cli_cmd_enable_mld, NULL,
+	  "= enable AP MLD to which the interface is affiliated" },
+	{ "disable_mld", hostapd_cli_cmd_disable_mld, NULL,
+	  "= disable AP MLD to which the interface is affiliated" },
 	{ "update_beacon", hostapd_cli_cmd_update_beacon, NULL,
 	  "= update Beacon frame contents\n"},
+	{ "stop_ap", hostapd_cli_cmd_stop_ap, NULL,
+	  "= stop AP\n"},
 	{ "erp_flush", hostapd_cli_cmd_erp_flush, NULL,
 	  "= drop all ERP keys"},
 	{ "log_level", hostapd_cli_cmd_log_level, NULL,
@@ -1793,8 +1868,16 @@ static const struct hostapd_cli_cmd hostapd_cli_commands[] = {
 	  "<addr> = poll a STA to check connectivity with a QoS null frame" },
 	{ "req_beacon", hostapd_cli_cmd_req_beacon, NULL,
 	  "<addr> [req_mode=] <measurement request hexdump>  = send a Beacon report request to a station" },
+	{ "req_link_measurement", hostapd_cli_cmd_req_link_measurement, NULL,
+	  "<addr> = send a link measurement report request to a station"},
 	{ "reload_wpa_psk", hostapd_cli_cmd_reload_wpa_psk, NULL,
 	  "= reload wpa_psk_file only" },
+#ifdef CONFIG_IEEE80211R_AP
+	{ "reload_rxkhs", hostapd_cli_cmd_reload_rxkhs, NULL,
+	  "= reload R0KHs and R1KHs" },
+	{ "get_rxkhs", hostapd_cli_cmd_get_rxkhs, NULL,
+	  "= get R0KHs and R1KHs" },
+#endif /* CONFIG_IEEE80211R_AP */
 #ifdef ANDROID
 	{ "driver", hostapd_cli_cmd_driver, NULL,
 	  "<driver sub command> [<hex formatted data>] = send driver command data" },

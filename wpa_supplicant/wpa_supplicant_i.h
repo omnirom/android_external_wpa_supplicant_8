@@ -1,6 +1,6 @@
 /*
  * wpa_supplicant - Internal definitions
- * Copyright (c) 2003-2014, Jouni Malinen <j@w1.fi>
+ * Copyright (c) 2003-2024, Jouni Malinen <j@w1.fi>
  *
  * This software may be distributed under the terms of the BSD license.
  * See README for more details.
@@ -494,6 +494,7 @@ struct beacon_rep_data {
 	u8 bssid[ETH_ALEN];
 	enum beacon_report_detail report_detail;
 	struct bitfield *eids;
+	struct bitfield *ext_eids;
 };
 
 
@@ -678,6 +679,13 @@ struct dscp_policy_data {
 };
 
 
+struct ml_sta_link_info {
+	u8 link_id;
+	u8 bssid[ETH_ALEN];
+	u16 status;
+};
+
+
 /**
  * struct wpa_supplicant - Internal data for wpa_supplicant interface
  *
@@ -740,11 +748,12 @@ struct wpa_supplicant {
 	u8 ap_mld_addr[ETH_ALEN];
 	u8 mlo_assoc_link_id;
 	u16 valid_links; /* bitmap of valid MLO link IDs */
-	struct ml_sta_link_info {
+	struct {
 		u8 addr[ETH_ALEN];
 		u8 bssid[ETH_ALEN];
 		unsigned int freq;
 		struct wpa_bss *bss;
+		bool disabled;
 	} links[MAX_NUM_MLD_LINKS];
 	u8 *last_con_fail_realm;
 	size_t last_con_fail_realm_len;
@@ -813,6 +822,7 @@ struct wpa_supplicant {
 	size_t last_scan_res_used;
 	size_t last_scan_res_size;
 	struct os_reltime last_scan;
+	bool last_scan_external;
 
 	const struct wpa_driver_ops *driver;
 	int interface_removed; /* whether the network interface has been
@@ -928,6 +938,7 @@ struct wpa_supplicant {
 	u64 drv_flags;
 	u64 drv_flags2;
 	unsigned int drv_enc;
+	unsigned int drv_key_mgmt;
 	unsigned int drv_rrm_flags;
 	unsigned int drv_max_acl_mac_addrs;
 
@@ -1046,6 +1057,7 @@ struct wpa_supplicant {
 		bool ext_ml_auth;
 		int *sae_rejected_groups;
 #endif /* CONFIG_SAE */
+		u16 assoc_auth_type;
 	} sme;
 #endif /* CONFIG_SME */
 
@@ -1207,6 +1219,7 @@ struct wpa_supplicant {
 	struct wpa_ssid *bgscan_ssid;
 	const struct bgscan_ops *bgscan;
 	void *bgscan_priv;
+	int signal_threshold;
 
 	const struct autoscan_ops *autoscan;
 	struct wpa_driver_scan_params *autoscan_params;
@@ -1315,14 +1328,15 @@ struct wpa_supplicant {
 	u8 wnm_reply;
 	u8 wnm_num_neighbor_report;
 	u8 wnm_mode;
+	bool wnm_link_removal;
+	u8 wnm_dissoc_addr[ETH_ALEN];
 	u16 wnm_dissoc_timer;
 	u8 wnm_bss_termination_duration[12];
 	struct neighbor_report *wnm_neighbor_report_elements;
 	struct os_reltime wnm_cand_valid_until;
-	u8 wnm_cand_from_bss[ETH_ALEN];
+	struct wpa_bss *wnm_target_bss;
 	enum bss_trans_mgmt_status_code bss_tm_status;
 	bool bss_trans_mgmt_in_progress;
-	struct wpabuf *coloc_intf_elems;
 	u8 coloc_intf_dialog_token;
 	u8 coloc_intf_auto_report;
 	u8 coloc_intf_timeout;
@@ -1381,6 +1395,7 @@ struct wpa_supplicant {
 	unsigned int oci_freq_override_fils_assoc;
 	unsigned int oci_freq_override_wnm_sleep;
 	unsigned int disable_eapol_g2_tx;
+	int test_assoc_comeback_type;
 #endif /* CONFIG_TESTING_OPTIONS */
 
 	struct wmm_ac_assoc_data *wmm_ac_assoc_info;
@@ -1487,6 +1502,9 @@ struct wpa_supplicant {
 	int dpp_netrole;
 	int dpp_auth_ok_on_ack;
 	int dpp_in_response_listen;
+	bool dpp_tx_auth_resp_on_roc_stop;
+	bool dpp_tx_chan_change;
+	bool dpp_listen_on_tx_expire;
 	int dpp_gas_client;
 	int dpp_gas_server;
 	int dpp_gas_dialog_token;
@@ -1567,8 +1585,24 @@ struct wpa_supplicant {
 	unsigned int multi_ap_ie:1;
 	unsigned int multi_ap_backhaul:1;
 	unsigned int multi_ap_fronthaul:1;
+
+#ifndef CONFIG_NO_ROBUST_AV
 	struct robust_av_data robust_av;
 	bool mscs_setup_done;
+	struct scs_robust_av_data scs_robust_av_req;
+	u8 scs_dialog_token;
+	struct dl_list active_scs_ids;
+	bool ongoing_scs_req;
+	u8 dscp_req_dialog_token;
+	u8 dscp_query_dialog_token;
+	unsigned int enable_dscp_policy_capa:1;
+	unsigned int connection_dscp:1;
+	unsigned int wait_for_dscp_req:1;
+#ifdef CONFIG_TESTING_OPTIONS
+	unsigned int disable_scs_support:1;
+	unsigned int disable_mscs_support:1;
+#endif /* CONFIG_TESTING_OPTIONS */
+#endif /* CONFIG_NO_ROBUST_AV */
 
 	bool wps_scan_done; /* Set upon receiving scan results event */
 	bool supp_pbc_active; /* Set for interface when PBC is triggered */
@@ -1580,19 +1614,7 @@ struct wpa_supplicant {
 	unsigned int pasn_count;
 	struct pasn_auth *pasn_params;
 #endif /* CONFIG_PASN */
-	struct scs_robust_av_data scs_robust_av_req;
-	u8 scs_dialog_token;
-#ifdef CONFIG_TESTING_OPTIONS
-	unsigned int disable_scs_support:1;
-	unsigned int disable_mscs_support:1;
-#endif /* CONFIG_TESTING_OPTIONS */
-	struct dl_list active_scs_ids;
-	bool ongoing_scs_req;
-	u8 dscp_req_dialog_token;
-	u8 dscp_query_dialog_token;
-	unsigned int enable_dscp_policy_capa:1;
-	unsigned int connection_dscp:1;
-	unsigned int wait_for_dscp_req:1;
+
 	bool is_6ghz_enabled;
 	bool crossed_6ghz_dom;
 	bool last_scan_all_chan;
@@ -1609,6 +1631,18 @@ struct wpa_supplicant {
 	 * owe_transition_search == 1 */
 	int *owe_trans_scan_freq;
 #endif /* CONFIG_OWE */
+
+#ifdef CONFIG_NAN_USD
+	struct nan_de *nan_de;
+	struct wpa_radio_work *nan_usd_listen_work;
+	struct wpa_radio_work *nan_usd_tx_work;
+#endif /* CONFIG_NAN_USD */
+
+	bool ssid_verified;
+	bool bigtk_set;
+	u64 first_beacon_tsf;
+	unsigned int beacons_checked;
+	unsigned int next_beacon_check;
 };
 
 
@@ -1715,10 +1749,12 @@ void wpa_supplicant_rx_eapol(void *ctx, const u8 *own_addr,
 			     enum frame_encryption encrypted);
 void wpa_supplicant_update_config(struct wpa_supplicant *wpa_s);
 void wpa_supplicant_clear_status(struct wpa_supplicant *wpa_s);
-void wpas_connection_failed(struct wpa_supplicant *wpa_s, const u8 *bssid);
+void wpas_connection_failed(struct wpa_supplicant *wpa_s, const u8 *bssid,
+			    const u8 **link_bssids);
 void fils_connection_failure(struct wpa_supplicant *wpa_s);
 void fils_pmksa_cache_flush(struct wpa_supplicant *wpa_s);
 int wpas_driver_bss_selection(struct wpa_supplicant *wpa_s);
+bool wpas_rsn_overriding(struct wpa_supplicant *wpa_s);
 int wpas_is_p2p_prioritized(struct wpa_supplicant *wpa_s);
 void wpas_auth_failed(struct wpa_supplicant *wpa_s, const char *reason,
 		      const u8 *bssid);
@@ -1905,6 +1941,7 @@ int wpas_get_ssid_pmf(struct wpa_supplicant *wpa_s, struct wpa_ssid *ssid);
 int pmf_in_use(struct wpa_supplicant *wpa_s, const u8 *addr);
 void wpa_s_setup_sae_pt(struct wpa_config *conf, struct wpa_ssid *ssid,
 			bool force);
+void wpa_s_clear_sae_rejected(struct wpa_supplicant *wpa_s);
 
 bool wpas_is_sae_avoided(struct wpa_supplicant *wpa_s,
 			struct wpa_ssid *ssid,
@@ -2015,5 +2052,10 @@ void wpas_pasn_auth_work_done(struct wpa_supplicant *wpa_s, int status);
 bool wpas_is_6ghz_supported(struct wpa_supplicant *wpa_s, bool only_enabled);
 
 bool wpa_is_non_eht_scs_traffic_desc_supported(struct wpa_bss *bss);
+bool wpas_ap_link_address(struct wpa_supplicant *wpa_s, const u8 *addr);
+bool wpas_ap_supports_rsn_overriding(struct wpa_supplicant *wpa_s,
+				     struct wpa_bss *bss);
+bool wpas_ap_supports_rsn_overriding_2(struct wpa_supplicant *wpa_s,
+				       struct wpa_bss *bss);
 
 #endif /* WPA_SUPPLICANT_I_H */

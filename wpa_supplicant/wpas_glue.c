@@ -418,7 +418,7 @@ static int wpa_get_beacon_ie(struct wpa_supplicant *wpa_s)
 	const u8 *ie;
 
 	dl_list_for_each(bss, &wpa_s->bss, struct wpa_bss, list) {
-		if (os_memcmp(bss->bssid, wpa_s->bssid, ETH_ALEN) != 0)
+		if (!ether_addr_equal(bss->bssid, wpa_s->bssid))
 			continue;
 		if (ssid == NULL ||
 		    ((bss->ssid_len == ssid->ssid_len &&
@@ -441,11 +441,11 @@ static int wpa_get_beacon_ie(struct wpa_supplicant *wpa_s)
 		if (wpa_sm_set_ap_wpa_ie(wpa_s->wpa, ie, ie ? 2 + ie[1] : 0))
 			ret = -1;
 
-		ie = wpa_bss_get_ie(curr, WLAN_EID_RSN);
+		ie = wpa_bss_get_rsne(wpa_s, curr, ssid, false);
 		if (wpa_sm_set_ap_rsn_ie(wpa_s->wpa, ie, ie ? 2 + ie[1] : 0))
 			ret = -1;
 
-		ie = wpa_bss_get_ie(curr, WLAN_EID_RSNX);
+		ie = wpa_bss_get_rsnxe(wpa_s, curr, ssid, false);
 		if (wpa_sm_set_ap_rsnxe(wpa_s->wpa, ie, ie ? 2 + ie[1] : 0))
 			ret = -1;
 	} else {
@@ -465,7 +465,7 @@ static int wpa_supplicant_get_beacon_ie(void *ctx)
 
 	/* No WPA/RSN IE found in the cached scan results. Try to get updated
 	 * scan results from the driver. */
-	if (wpa_supplicant_update_scan_results(wpa_s) < 0)
+	if (wpa_supplicant_update_scan_results(wpa_s, wpa_s->bssid) < 0)
 		return -1;
 
 	return wpa_get_beacon_ie(wpa_s);
@@ -550,6 +550,8 @@ static int wpa_supplicant_set_key(void *_wpa_s, int link_id, enum wpa_alg alg,
 				  enum key_flag key_flag)
 {
 	struct wpa_supplicant *wpa_s = _wpa_s;
+	int ret;
+
 	if (alg == WPA_ALG_TKIP && key_idx == 0 && key_len == 32) {
 		/* Clear the MIC error counter when setting a new PTK. */
 		wpa_s->mic_errors_seen = 0;
@@ -572,8 +574,14 @@ static int wpa_supplicant_set_key(void *_wpa_s, int link_id, enum wpa_alg alg,
 		wpa_s->last_tk_len = key_len;
 	}
 #endif /* CONFIG_TESTING_OPTIONS */
-	return wpa_drv_set_key(wpa_s, link_id, alg, addr, key_idx, set_tx, seq,
-			       seq_len, key, key_len, key_flag);
+
+	ret = wpa_drv_set_key(wpa_s, link_id, alg, addr, key_idx, set_tx, seq,
+			      seq_len, key, key_len, key_flag);
+	if (ret == 0 && (key_idx == 6 || key_idx == 7) &&
+	    alg != WPA_ALG_NONE && key_len > 0)
+		wpa_s->bigtk_set = true;
+
+	return ret;
 }
 
 
@@ -1470,6 +1478,15 @@ wpa_supplicant_notify_pmksa_cache_entry(void *_wpa_s,
 }
 
 
+static void wpa_supplicant_ssid_verified(void *_wpa_s)
+{
+	struct wpa_supplicant *wpa_s = _wpa_s;
+
+	wpa_s->ssid_verified = true;
+	wpa_msg(wpa_s, MSG_INFO, "RSN: SSID matched expected value");
+}
+
+
 int wpa_supplicant_init_wpa(struct wpa_supplicant *wpa_s)
 {
 #ifndef CONFIG_NO_WPA
@@ -1536,6 +1553,7 @@ int wpa_supplicant_init_wpa(struct wpa_supplicant *wpa_s)
 	ctx->set_ltf_keyseed = wpa_supplicant_set_ltf_keyseed;
 #endif /* CONFIG_PASN */
 	ctx->notify_pmksa_cache_entry = wpa_supplicant_notify_pmksa_cache_entry;
+	ctx->ssid_verified = wpa_supplicant_ssid_verified;
 
 	wpa_s->wpa = wpa_sm_init(ctx);
 	if (wpa_s->wpa == NULL) {

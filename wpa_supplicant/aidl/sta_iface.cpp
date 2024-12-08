@@ -1920,6 +1920,11 @@ StaIface::getWpaDriverCapabilitiesInternal()
 #ifdef EAP_TLSV1_3
 	mask |= static_cast<uint32_t>(WpaDriverCapabilitiesMask::TLS_V1_3);
 #endif
+	AidlManager *aidl_manager = AidlManager::getInstance();
+	WPA_ASSERT(aidl_manager);
+	if (aidl_manager->isAidlServiceVersionAtLeast(4) && wpas_rsn_overriding(wpa_s)) {
+		mask |= static_cast<uint32_t>(WpaDriverCapabilitiesMask::RSN_OVERRIDING);
+	}
 
 	wpa_printf(MSG_DEBUG, "Driver capability mask: 0x%x", mask);
 

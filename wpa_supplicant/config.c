@@ -197,9 +197,10 @@ static char * wpa_config_write_str(const struct parse_data *data,
 #endif /* NO_CONFIG_WRITE */
 
 
-static int wpa_config_parse_int(const struct parse_data *data,
-				struct wpa_ssid *ssid,
-				int line, const char *value)
+static int wpa_config_parse_int_impl(const struct parse_data *data,
+				     struct wpa_ssid *ssid,
+				     int line, const char *value,
+				     bool check_range)
 {
 	int val, *dst;
 	char *end;
@@ -212,28 +213,43 @@ static int wpa_config_parse_int(const struct parse_data *data,
 		return -1;
 	}
 
+	if (check_range && val < (long) data->param3) {
+		wpa_printf(MSG_ERROR, "Line %d: too small %s (value=%d "
+			   "min_value=%ld)", line, data->name, val,
+			   (long) data->param3);
+		return -1;
+	}
+
+	if (check_range && val > (long) data->param4) {
+		wpa_printf(MSG_ERROR, "Line %d: too large %s (value=%d "
+			   "max_value=%ld)", line, data->name, val,
+			   (long) data->param4);
+		return -1;
+	}
+
 	if (*dst == val)
 		return 1;
+
 	*dst = val;
 	wpa_printf(MSG_MSGDUMP, "%s=%d (0x%x)", data->name, *dst, *dst);
 
-	if (data->param3 && *dst < (long) data->param3) {
-		wpa_printf(MSG_ERROR, "Line %d: too small %s (value=%d "
-			   "min_value=%ld)", line, data->name, *dst,
-			   (long) data->param3);
-		*dst = (long) data->param3;
-		return -1;
-	}
-
-	if (data->param4 && *dst > (long) data->param4) {
-		wpa_printf(MSG_ERROR, "Line %d: too large %s (value=%d "
-			   "max_value=%ld)", line, data->name, *dst,
-			   (long) data->param4);
-		*dst = (long) data->param4;
-		return -1;
-	}
-
 	return 0;
+}
+
+
+static int wpa_config_parse_int(const struct parse_data *data,
+				struct wpa_ssid *ssid,
+				int line, const char *value)
+{
+	return wpa_config_parse_int_impl(data, ssid, line, value, false);
+}
+
+
+static int wpa_config_parse_int_range(const struct parse_data *data,
+				      struct wpa_ssid *ssid,
+				      int line, const char *value)
+{
+	return wpa_config_parse_int_impl(data, ssid, line, value, true);
 }
 
 
@@ -2368,7 +2384,7 @@ static int wpa_config_parse_mac_value(const struct parse_data *data,
 	u8 mac_value[ETH_ALEN];
 
 	if (hwaddr_aton(value, mac_value) == 0) {
-		if (os_memcmp(mac_value, ssid->mac_value, ETH_ALEN) == 0)
+		if (ether_addr_equal(mac_value, ssid->mac_value))
 			return 1;
 		os_memcpy(ssid->mac_value, mac_value, ETH_ALEN);
 		return 0;
@@ -2457,7 +2473,14 @@ static char * wpa_config_write_mac_value(const struct parse_data *data,
 #define INTe(f, m) _INTe(f, m), NULL, NULL, 0
 
 /* INT_RANGE: Define an integer variable with allowed value range */
-#define INT_RANGE(f, min, max) _INT(f), (void *) (min), (void *) (max), 0
+#ifdef NO_CONFIG_WRITE
+#define INT_RANGE(f, min, max) #f, wpa_config_parse_int_range, OFFSET(f), \
+	(void *) 0, (void *) (min), (void *) (max), 0
+#else /* NO_CONFIG_WRITE */
+#define INT_RANGE(f, min, max) #f, wpa_config_parse_int_range, \
+	wpa_config_write_int, OFFSET(f),	       \
+	(void *) 0, (void *) (min), (void *) (max), 0
+#endif /* NO_CONFIG_WRITE */
 
 /* FUNC: Define a configuration variable that uses a custom function for
  * parsing and writing the value. */
@@ -2652,7 +2675,7 @@ static const struct parse_data ssid_fields[] = {
 #endif /* CONFIG_P2P */
 #ifdef CONFIG_HT_OVERRIDES
 	{ INT_RANGE(disable_ht, 0, 1) },
-	{ INT_RANGE(disable_ht40, -1, 1) },
+	{ INT_RANGE(disable_ht40, 0, 1) },
 	{ INT_RANGE(disable_sgi, 0, 1) },
 	{ INT_RANGE(disable_ldpc, 0, 1) },
 	{ INT_RANGE(ht40_intolerant, 0, 1) },
@@ -2725,11 +2748,15 @@ static const struct parse_data ssid_fields[] = {
 	{ INT_RANGE(owe_ptk_workaround, 0, 1) },
 	{ INT_RANGE(multi_ap_backhaul_sta, 0, 1) },
 	{ INT_RANGE(ft_eap_pmksa_caching, 0, 1) },
+	{ INT_RANGE(multi_ap_profile, MULTI_AP_PROFILE_1,
+		    MULTI_AP_PROFILE_MAX) },
 	{ INT_RANGE(beacon_prot, 0, 1) },
 	{ INT_RANGE(transition_disable, 0, 255) },
 	{ INT_RANGE(sae_pk, 0, 2) },
 	{ INT_RANGE(disable_eht, 0, 1)},
 	{ INT_RANGE(enable_4addr_mode, 0, 1)},
+	{ INT_RANGE(max_idle, 0, 65535)},
+	{ INT_RANGE(ssid_protection, 0, 1)},
 };
 
 #undef OFFSET
@@ -4681,6 +4708,10 @@ struct wpa_config * wpa_config_alloc_empty(const char *ctrl_interface,
 		config->driver_param = os_strdup(driver_param);
 	config->gas_rand_addr_lifetime = DEFAULT_RAND_ADDR_LIFETIME;
 
+#ifdef CONFIG_TESTING_OPTIONS
+	config->mld_connect_band_pref = DEFAULT_MLD_CONNECT_BAND_PREF;
+#endif /* CONFIG_TESTING_OPTIONS */
+
 	return config;
 }
 
@@ -4739,9 +4770,10 @@ struct global_parse_data {
 };
 
 
-static int wpa_global_config_parse_int(const struct global_parse_data *data,
-				       struct wpa_config *config, int line,
-				       const char *pos)
+static int
+wpa_global_config_parse_int_impl(const struct global_parse_data *data,
+				 struct wpa_config *config, int line,
+				 const char *pos, bool check_range)
 {
 	int val, *dst;
 	char *end;
@@ -4754,28 +4786,44 @@ static int wpa_global_config_parse_int(const struct global_parse_data *data,
 			   line, pos);
 		return -1;
 	}
+
+	if (check_range && val < (long) data->param2) {
+		wpa_printf(MSG_ERROR, "Line %d: too small %s (value=%d "
+			   "min_value=%ld)", line, data->name, val,
+			   (long) data->param2);
+		return -1;
+	}
+
+	if (check_range && val > (long) data->param3) {
+		wpa_printf(MSG_ERROR, "Line %d: too large %s (value=%d "
+			   "max_value=%ld)", line, data->name, val,
+			   (long) data->param3);
+		return -1;
+	}
+
 	same = *dst == val;
 	*dst = val;
 
 	wpa_printf(MSG_DEBUG, "%s=%d", data->name, *dst);
 
-	if (data->param2 && *dst < (long) data->param2) {
-		wpa_printf(MSG_ERROR, "Line %d: too small %s (value=%d "
-			   "min_value=%ld)", line, data->name, *dst,
-			   (long) data->param2);
-		*dst = (long) data->param2;
-		return -1;
-	}
-
-	if (data->param3 && *dst > (long) data->param3) {
-		wpa_printf(MSG_ERROR, "Line %d: too large %s (value=%d "
-			   "max_value=%ld)", line, data->name, *dst,
-			   (long) data->param3);
-		*dst = (long) data->param3;
-		return -1;
-	}
-
 	return same;
+}
+
+
+static int wpa_global_config_parse_int(const struct global_parse_data *data,
+				       struct wpa_config *config, int line,
+				       const char *pos)
+{
+	return wpa_global_config_parse_int_impl(data, config, line, pos, false);
+}
+
+
+static int
+wpa_global_config_parse_int_range(const struct global_parse_data *data,
+				  struct wpa_config *config, int line,
+				  const char *pos)
+{
+	return wpa_global_config_parse_int_impl(data, config, line, pos, true);
 }
 
 
@@ -5315,6 +5363,23 @@ static int wpa_config_get_ipv4(const char *name, struct wpa_config *config,
 #endif /* CONFIG_P2P */
 
 
+#ifdef CONFIG_TESTING_OPTIONS
+static int wpa_config_process_mld_connect_bssid_pref(
+	const struct global_parse_data *data,
+	struct wpa_config *config, int line, const char *pos)
+{
+	if (hwaddr_aton2(pos, config->mld_connect_bssid_pref) < 0) {
+		wpa_printf(MSG_ERROR,
+			   "Line %d: Invalid mld_connect_bssid_pref '%s'",
+			   line, pos);
+		return -1;
+	}
+
+	return 0;
+}
+#endif /* CONFIG_TESTING_OPTIONS */
+
+
 #ifdef OFFSET
 #undef OFFSET
 #endif /* OFFSET */
@@ -5325,7 +5390,8 @@ static int wpa_config_get_ipv4(const char *name, struct wpa_config *config,
 #define FUNC_NO_VAR(f) #f, wpa_config_process_ ## f, NULL, NULL, NULL, NULL
 #define _INT(f) #f, wpa_global_config_parse_int, wpa_config_get_int, OFFSET(f)
 #define INT(f) _INT(f), NULL, NULL
-#define INT_RANGE(f, min, max) _INT(f), (void *) min, (void *) max
+#define INT_RANGE(f, min, max) #f, wpa_global_config_parse_int_range, \
+	wpa_config_get_int, OFFSET(f), (void *) min, (void *) max
 #define _STR(f) #f, wpa_global_config_parse_str, wpa_config_get_str, OFFSET(f)
 #define STR(f) _STR(f), NULL, NULL
 #define STR_RANGE(f, min, max) _STR(f), (void *) min, (void *) max
@@ -5525,12 +5591,22 @@ static const struct global_parse_data global_fields[] = {
 	{ INT_RANGE(extended_key_id, 0, 1), 0 },
 #endif /* CONFIG_WNM */
 	{ INT_RANGE(wowlan_disconnect_on_deinit, 0, 1), 0},
+	{ INT_RANGE(rsn_overriding, 0, 2), 0},
 #ifdef CONFIG_PASN
 #ifdef CONFIG_TESTING_OPTIONS
 	{ INT_RANGE(force_kdk_derivation, 0, 1), 0 },
 	{ INT_RANGE(pasn_corrupt_mic, 0, 1), 0 },
 #endif /* CONFIG_TESTING_OPTIONS */
 #endif /* CONFIG_PASN */
+#ifdef CONFIG_TESTING_OPTIONS
+	{ INT_RANGE(mld_force_single_link, 0, 1), 0 },
+	{ INT_RANGE(mld_connect_band_pref, 0, MLD_CONNECT_BAND_PREF_MAX), 0 },
+	{ FUNC(mld_connect_bssid_pref), 0 },
+#endif /* CONFIG_TESTING_OPTIONS */
+	{ INT_RANGE(ft_prepend_pmkid, 0, 1), CFG_CHANGED_FT_PREPEND_PMKID },
+	/* NOTE: When adding new parameters here, add_interface() in
+	 * wpa_supplicant/dbus_new_introspect.c may need to be modified to
+	 * increase the size of the iface->xml buffer. */
 };
 
 #undef FUNC

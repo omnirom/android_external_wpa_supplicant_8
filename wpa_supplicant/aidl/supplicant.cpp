@@ -413,7 +413,7 @@ Supplicant::addP2pInterfaceInternal(const std::string& name)
 		// Request the current scan results from the driver and update
 		// the local BSS list wpa_s->bss. This is to avoid a full scan
 		// while processing the connect request on newly created interface.
-		wpa_supplicant_update_scan_results(wpa_s);
+		wpa_supplicant_update_scan_results(wpa_s, NULL);
 	}
 	// The supplicant core creates a corresponding aidl object via
 	// AidlManager when |wpa_supplicant_add_iface| is called.
@@ -472,7 +472,7 @@ Supplicant::addStaInterfaceInternal(const std::string& name)
 		// Request the current scan results from the driver and update
 		// the local BSS list wpa_s->bss. This is to avoid a full scan
 		// while processing the connect request on newly created interface.
-		wpa_supplicant_update_scan_results(wpa_s);
+		wpa_supplicant_update_scan_results(wpa_s, NULL);
 	}
 	// The supplicant core creates a corresponding aidl object via
 	// AidlManager when |wpa_supplicant_add_iface| is called.

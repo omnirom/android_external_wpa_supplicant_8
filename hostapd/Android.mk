@@ -170,6 +170,7 @@ OBJS += src/utils/crc32.c
 OBJS += src/common/ieee802_11_common.c
 OBJS += src/common/wpa_common.c
 OBJS += src/common/hw_features_common.c
+OBJS += src/common/ptksa_cache.c
 
 OBJS += src/eapol_auth/eapol_auth_sm.c
 
@@ -252,6 +253,8 @@ ifdef CONFIG_OCV
 L_CFLAGS += -DCONFIG_OCV
 OBJS += src/common/ocv.c
 endif
+
+NEED_AES_UNWRAP=y
 
 ifdef CONFIG_IEEE80211R
 L_CFLAGS += -DCONFIG_IEEE80211R -DCONFIG_IEEE80211R_AP
@@ -599,6 +602,12 @@ L_CFLAGS += -DCONFIG_DPP3
 endif
 endif
 
+ifdef CONFIG_NAN_USD
+OBJS += src/common/nan_de.c
+OBJS += src/ap/nan_usd_ap.c
+L_CFLAGS += -DCONFIG_NAN_USD
+endif
+
 ifdef CONFIG_PASN
 L_CFLAGS += -DCONFIG_PASN
 L_CFLAGS += -DCONFIG_PTKSA_CACHE
@@ -606,7 +615,6 @@ NEED_HMAC_SHA256_KDF=y
 NEED_HMAC_SHA384_KDF=y
 NEED_SHA256=y
 NEED_SHA384=y
-OBJS += src/common/ptksa_cache.c
 endif
 
 ifdef CONFIG_EAP_IKEV2
@@ -657,6 +665,11 @@ endif
 
 ifdef CHAP
 OBJS += src/eap_common/chap.c
+endif
+
+ifdef CONFIG_RADIUS_TLS
+TLS_FUNCS=y
+L_CFLAGS += -DCONFIG_RADIUS_TLS
 endif
 
 ifdef TLS_FUNCS
@@ -1058,6 +1071,7 @@ OBJS += src/ap/wmm.c
 OBJS += src/ap/ap_list.c
 OBJS += src/ap/comeback_token.c
 OBJS += src/pasn/pasn_responder.c
+OBJS += src/pasn/pasn_common.c
 OBJS += src/ap/ieee802_11.c
 OBJS += src/ap/hw_features.c
 OBJS += src/ap/dfs.c
@@ -1178,7 +1192,7 @@ LOCAL_NOTICE_FILE := $(LOCAL_PATH)/../LICENSE
 LOCAL_MODULE_TAGS := optional
 LOCAL_PROPRIETARY_MODULE := true
 LOCAL_MODULE_RELATIVE_PATH := hw
-LOCAL_VINTF_FRAGMENTS := android.hardware.wifi.hostapd.xml
+LOCAL_REQUIRED_MODULES += android.hardware.wifi.hostapd.xml
 ifdef CONFIG_DRIVER_CUSTOM
 LOCAL_STATIC_LIBRARIES := libCustomWifi
 endif
@@ -1194,7 +1208,7 @@ LOCAL_STATIC_LIBRARIES += libnl_2
 endif
 endif
 ifeq ($(HOSTAPD_USE_AIDL), y)
-LOCAL_SHARED_LIBRARIES += android.hardware.wifi.hostapd-V2-ndk
+LOCAL_SHARED_LIBRARIES += android.hardware.wifi.hostapd-V3-ndk
 LOCAL_SHARED_LIBRARIES += android.hardware.wifi.common-V1-ndk
 LOCAL_SHARED_LIBRARIES += libbase libutils
 LOCAL_SHARED_LIBRARIES += libbinder_ndk
@@ -1249,7 +1263,7 @@ LOCAL_SRC_FILES := \
     aidl/aidl.cpp \
     aidl/hostapd.cpp
 LOCAL_SHARED_LIBRARIES := \
-    android.hardware.wifi.hostapd-V2-ndk \
+    android.hardware.wifi.hostapd-V3-ndk \
     android.hardware.wifi.common-V1-ndk \
     libbinder_ndk \
     libbase \

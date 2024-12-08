@@ -1731,6 +1731,7 @@ DBusMessage * wpas_dbus_handler_scan(DBusMessage *message,
 					reply = wpas_dbus_error_scan_error(
 						message,
 						"Scan request rejected");
+					goto out;
 				}
 			} else {
 				wpa_s->scan_req = MANUAL_SCAN_REQ;
@@ -1757,6 +1758,7 @@ DBusMessage * wpas_dbus_handler_scan(DBusMessage *message,
 						false)) {
 			reply = wpas_dbus_error_scan_error(
 				message, "Scan request rejected");
+			goto out;
 		}
 	} else {
 		wpa_printf(MSG_DEBUG, "%s[dbus]: Unknown scan type: %s",
@@ -1957,6 +1959,7 @@ DBusMessage * wpas_dbus_handler_remove_all_creds(DBusMessage *message,
 
 
 #ifdef CONFIG_INTERWORKING
+
 DBusMessage *
 wpas_dbus_handler_interworking_select(DBusMessage *message,
 				      struct wpa_supplicant *wpa_s)
@@ -1977,6 +1980,111 @@ wpas_dbus_handler_interworking_select(DBusMessage *message,
 
 	return reply;
 }
+
+
+DBusMessage *
+wpas_dbus_handler_anqp_get(DBusMessage *message, struct wpa_supplicant *wpa_s)
+{
+	DBusMessageIter	iter, iter_dict;
+	struct wpa_dbus_dict_entry entry;
+	int ret;
+	u8 dst_addr[ETH_ALEN];
+	bool is_addr_present = false;
+	unsigned int freq = 0;
+#define MAX_ANQP_INFO_ID 100 /* Max info ID count from CLI implementation */
+	u16 id[MAX_ANQP_INFO_ID];
+	size_t num_id = 0;
+	u32 subtypes = 0;
+	u32 mbo_subtypes = 0;
+	size_t i;
+
+	dbus_message_iter_init(message, &iter);
+
+	if (!wpa_dbus_dict_open_read(&iter, &iter_dict, NULL))
+		return wpas_dbus_error_invalid_args(message, NULL);
+
+	while (wpa_dbus_dict_has_dict_entry(&iter_dict)) {
+		if (!wpa_dbus_dict_get_entry(&iter_dict, &entry))
+			return wpas_dbus_error_invalid_args(message, NULL);
+
+		if (os_strcmp(entry.key, "addr") == 0 &&
+		    entry.type == DBUS_TYPE_STRING) {
+			if (hwaddr_aton(entry.str_value, dst_addr)) {
+				wpa_printf(MSG_DEBUG,
+					   "%s[dbus]: Invalid address '%s'",
+					   __func__, entry.str_value);
+				wpa_dbus_dict_entry_clear(&entry);
+				return wpas_dbus_error_invalid_args(
+					message, "invalid address");
+			}
+
+			is_addr_present = true;
+		} else if (os_strcmp(entry.key, "freq") == 0 &&
+			   entry.type == DBUS_TYPE_UINT32) {
+			freq = entry.uint32_value;
+		} else if (os_strcmp(entry.key, "ids") == 0 &&
+			   entry.type == DBUS_TYPE_ARRAY &&
+			   entry.array_type == DBUS_TYPE_UINT16) {
+			for (i = 0; i < entry.array_len &&
+				     num_id < MAX_ANQP_INFO_ID; i++) {
+				id[num_id] = entry.uint16array_value[i];
+				num_id++;
+			}
+		} else if (os_strcmp(entry.key, "hs20_ids") == 0 &&
+			   entry.type == DBUS_TYPE_ARRAY &&
+			   entry.array_type == DBUS_TYPE_BYTE) {
+			for (i = 0; i < entry.array_len; i++) {
+				int num = entry.bytearray_value[i];
+
+				if (num <= 0 || num > 31) {
+					wpa_dbus_dict_entry_clear(&entry);
+					return wpas_dbus_error_invalid_args(
+						message,
+						"invalid HS20 ANQP id");
+				}
+				subtypes |= BIT(num);
+			}
+		} else if (os_strcmp(entry.key, "mbo_ids") == 0 &&
+			   entry.type == DBUS_TYPE_ARRAY &&
+			   entry.array_type == DBUS_TYPE_BYTE) {
+			for (i = 0; i < entry.array_len; i++) {
+				int num = entry.bytearray_value[i];
+
+				if (num <= 0 || num > MAX_MBO_ANQP_SUBTYPE) {
+					wpa_dbus_dict_entry_clear(&entry);
+					return wpas_dbus_error_invalid_args(
+						message, "invalid MBO ANQP id");
+				}
+				mbo_subtypes |= BIT(num);
+			}
+		} else {
+			wpa_dbus_dict_entry_clear(&entry);
+			return wpas_dbus_error_invalid_args(
+				message, "unsupported parameter");
+		}
+
+		wpa_dbus_dict_entry_clear(&entry);
+	}
+
+	if (!is_addr_present) {
+		wpa_printf(MSG_DEBUG,
+			   "%s[dbus]: address not provided", __func__);
+		return wpas_dbus_error_invalid_args(message,
+						    "address not provided");
+	}
+
+	ret = anqp_send_req(wpa_s, dst_addr, freq, id, num_id, subtypes,
+			    mbo_subtypes);
+	if (ret < 0) {
+		wpa_printf(MSG_ERROR, "%s[dbus]: failed to send ANQP request",
+			   __func__);
+		return wpas_dbus_error_unknown_error(
+			message, "error sending ANQP request");
+	}
+
+	return NULL;
+}
+
 #endif /* CONFIG_INTERWORKING */
 
 
@@ -5527,7 +5635,7 @@ dbus_bool_t wpas_dbus_getter_bss_rsn(
 		return FALSE;
 
 	os_memset(&wpa_data, 0, sizeof(wpa_data));
-	ie = wpa_bss_get_ie(res, WLAN_EID_RSN);
+	ie = wpa_bss_get_rsne(args->wpa_s, res, NULL, false);
 	if (ie && wpa_parse_wpa_ie(ie, 2 + ie[1], &wpa_data) < 0) {
 		dbus_set_error_const(error, DBUS_ERROR_FAILED,
 				     "failed to parse RSN IE");
@@ -5648,6 +5756,177 @@ dbus_bool_t wpas_dbus_getter_bss_age(
 	age = diff.sec > 0 ? diff.sec : 0;
 	return wpas_dbus_simple_property_getter(iter, DBUS_TYPE_UINT32, &age,
 						error);
+}
+
+
+/**
+ * wpas_dbus_getter_bss_anqp - Return all the ANQP fields of a BSS
+ * @iter: Pointer to incoming dbus message iter
+ * @error: Location to store error on failure
+ * @user_data: Function specific data
+ * Returns: TRUE on success, FALSE on failure
+ *
+ * Getter for "ANQP" property.
+ */
+dbus_bool_t wpas_dbus_getter_bss_anqp(
+	const struct wpa_dbus_property_desc *property_desc,
+	DBusMessageIter *iter, DBusError *error, void *user_data)
+{
+	DBusMessageIter iter_dict, variant_iter;
+	struct bss_handler_args *args = user_data;
+	struct wpa_bss *bss;
+	struct wpa_bss_anqp *anqp;
+	struct wpa_bss_anqp_elem *elem;
+
+	bss = get_bss_helper(args, error, __func__);
+	if (!bss)
+		return FALSE;
+
+	if (!dbus_message_iter_open_container(iter, DBUS_TYPE_VARIANT,
+					      "a{sv}", &variant_iter) ||
+	    !wpa_dbus_dict_open_write(&variant_iter, &iter_dict))
+		goto nomem;
+
+	anqp = bss->anqp;
+	if (anqp) {
+#ifdef CONFIG_INTERWORKING
+		if (anqp->capability_list &&
+		    !wpa_dbus_dict_append_byte_array(
+			    &iter_dict, "CapabilityList",
+			    wpabuf_head(anqp->capability_list),
+			    wpabuf_len(anqp->capability_list)))
+			goto nomem;
+		if (anqp->venue_name &&
+		    !wpa_dbus_dict_append_byte_array(
+			    &iter_dict, "VenueName",
+			    wpabuf_head(anqp->venue_name),
+			    wpabuf_len(anqp->venue_name)))
+			goto nomem;
+		if (anqp->network_auth_type &&
+		    !wpa_dbus_dict_append_byte_array(
+			    &iter_dict, "NetworkAuthType",
+			    wpabuf_head(anqp->network_auth_type),
+			    wpabuf_len(anqp->network_auth_type)))
+			goto nomem;
+		if (anqp->roaming_consortium &&
+		    !wpa_dbus_dict_append_byte_array(
+			    &iter_dict, "RoamingConsortium",
+			    wpabuf_head(anqp->roaming_consortium),
+			    wpabuf_len(anqp->roaming_consortium)))
+			goto nomem;
+		if (anqp->ip_addr_type_availability &&
+		    !wpa_dbus_dict_append_byte_array(
+			    &iter_dict, "IPAddrTypeAvailability",
+			    wpabuf_head(anqp->ip_addr_type_availability),
+			    wpabuf_len(anqp->ip_addr_type_availability)))
+			goto nomem;
+		if (anqp->nai_realm &&
+		    !wpa_dbus_dict_append_byte_array(
+			    &iter_dict, "NAIRealm",
+			    wpabuf_head(anqp->nai_realm),
+			    wpabuf_len(anqp->nai_realm)))
+			goto nomem;
+		if (anqp->anqp_3gpp &&
+		    !wpa_dbus_dict_append_byte_array(
+			    &iter_dict, "3GPP",
+			    wpabuf_head(anqp->anqp_3gpp),
+			    wpabuf_len(anqp->anqp_3gpp)))
+			goto nomem;
+		if (anqp->domain_name &&
+		    !wpa_dbus_dict_append_byte_array(
+			    &iter_dict, "DomainName",
+			    wpabuf_head(anqp->domain_name),
+			    wpabuf_len(anqp->domain_name)))
+			goto nomem;
+		if (anqp->fils_realm_info &&
+		    !wpa_dbus_dict_append_byte_array(
+			    &iter_dict, "FilsRealmInfo",
+			    wpabuf_head(anqp->fils_realm_info),
+			    wpabuf_len(anqp->fils_realm_info)))
+			goto nomem;
+
+#ifdef CONFIG_HS20
+		if (anqp->hs20_capability_list &&
+		    !wpa_dbus_dict_append_byte_array(
+			    &iter_dict, "HS20CapabilityList",
+			    wpabuf_head(anqp->hs20_capability_list),
+			    wpabuf_len(anqp->hs20_capability_list)))
+			goto nomem;
+		if (anqp->hs20_operator_friendly_name &&
+		    !wpa_dbus_dict_append_byte_array(
+			    &iter_dict, "HS20OperatorFriendlyName",
+			    wpabuf_head(anqp->hs20_operator_friendly_name),
+			    wpabuf_len(anqp->hs20_operator_friendly_name)))
+			goto nomem;
+		if (anqp->hs20_wan_metrics &&
+		    !wpa_dbus_dict_append_byte_array(
+			    &iter_dict, "HS20WanMetrics",
+			    wpabuf_head(anqp->hs20_wan_metrics),
+			    wpabuf_len(anqp->hs20_wan_metrics)))
+			goto nomem;
+		if (anqp->hs20_connection_capability &&
+		    !wpa_dbus_dict_append_byte_array(
+			    &iter_dict, "HS20ConnectionCapability",
+			    wpabuf_head(anqp->hs20_connection_capability),
+			    wpabuf_len(anqp->hs20_connection_capability)))
+			goto nomem;
+		if (anqp->hs20_operating_class &&
+		    !wpa_dbus_dict_append_byte_array(
+			    &iter_dict, "HS20OperatingClass",
+			    wpabuf_head(anqp->hs20_operating_class),
+			    wpabuf_len(anqp->hs20_operating_class)))
+			goto nomem;
+		if (anqp->hs20_osu_providers_list &&
+		    !wpa_dbus_dict_append_byte_array(
+			    &iter_dict, "HS20OSUProvidersList",
+			    wpabuf_head(anqp->hs20_osu_providers_list),
+			    wpabuf_len(anqp->hs20_osu_providers_list)))
+			goto nomem;
+		if (anqp->hs20_operator_icon_metadata &&
+		    !wpa_dbus_dict_append_byte_array(
+			    &iter_dict, "HS20OperatorIconMetadata",
+			    wpabuf_head(anqp->hs20_operator_icon_metadata),
+			    wpabuf_len(anqp->hs20_operator_icon_metadata)))
+			goto nomem;
+		if (anqp->hs20_osu_providers_nai_list &&
+		    !wpa_dbus_dict_append_byte_array(
+			    &iter_dict, "HS20OSUProvidersNAIList",
+			    wpabuf_head(anqp->hs20_osu_providers_nai_list),
+			    wpabuf_len(anqp->hs20_osu_providers_nai_list)))
+			goto nomem;
+#endif /* CONFIG_HS20 */
+
+		dl_list_for_each(elem, &anqp->anqp_elems,
+				 struct wpa_bss_anqp_elem, list) {
+			char title[32];
+
+			os_snprintf(title, sizeof(title), "anqp[%u]",
+				    elem->infoid);
+			if (!wpa_dbus_dict_append_byte_array(
+				    &iter_dict, title,
+				    wpabuf_head(elem->payload),
+				    wpabuf_len(elem->payload)))
+				goto nomem;
+
+			os_snprintf(title, sizeof(title),
+				    "protected-anqp-info[%u]", elem->infoid);
+			if (!wpa_dbus_dict_append_bool(
+				    &iter_dict, title,
+				    elem->protected_response))
+				goto nomem;
+		}
+#endif /* CONFIG_INTERWORKING */
+	}
+
+	if (!wpa_dbus_dict_close_write(&variant_iter, &iter_dict) ||
+	    !dbus_message_iter_close_container(iter, &variant_iter))
+		goto nomem;
+
+	return TRUE;
+
+nomem:
+	dbus_set_error(error, DBUS_ERROR_NO_MEMORY, "no memory");
+	return FALSE;
 }
 
 

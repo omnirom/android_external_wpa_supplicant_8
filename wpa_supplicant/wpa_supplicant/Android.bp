@@ -23,24 +23,13 @@ package {
     ],
 }
 
-soong_config_module_type_import {
-    from: "frameworks/opt/net/wifi/libwifi_hal/Android.bp",
-    module_types: ["wifi_cc_defaults"],
-}
-
-wifi_cc_defaults {
+cc_defaults {
     name: "lib_vendor_wpa_supplicant",
-    soong_config_variables: {
-        board_wlan_device: {
-            emulator: {
-                static_libs: ["lib_driver_cmd_simulated_cf_bp"],
-            },
-            // TODO(b/295186835): Convert lib_driver_cmd_* to soong
-            conditions_default: {
-                static_libs: ["lib_driver_cmd_fallback"],
-            },
-        },
-    },
+    static_libs: select(soong_config_variable("wifi", "board_wlan_device"), {
+        "emulator": ["lib_driver_cmd_simulated_cf_bp"],
+        // TODO(b/295186835): Convert lib_driver_cmd_* to soong
+        default: ["lib_driver_cmd_fallback"],
+    }),
 }
 
 cc_binary {

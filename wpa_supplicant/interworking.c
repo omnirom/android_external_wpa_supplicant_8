@@ -1734,7 +1734,7 @@ int interworking_connect(struct wpa_supplicant *wpa_s, struct wpa_bss *bss,
 		   " for connection",
 		   MAC2STR(bss->bssid));
 
-	if (!wpa_bss_get_ie(bss, WLAN_EID_RSN)) {
+	if (!wpa_bss_get_rsne(wpa_s, bss, NULL, false)) {
 		/*
 		 * We currently support only HS 2.0 networks and those are
 		 * required to use WPA2-Enterprise.
@@ -2467,7 +2467,7 @@ static struct wpa_bss * pick_best_roaming_partner(struct wpa_supplicant *wpa_s,
 		cred2 = interworking_credentials_available(wpa_s, bss, NULL);
 		if (!cred2)
 			continue;
-		if (!wpa_bss_get_ie(bss, WLAN_EID_RSN))
+		if (!wpa_bss_get_rsne(wpa_s, bss, NULL, false))
 			continue;
 		prio = roaming_prio(wpa_s, cred2, bss);
 		wpa_printf(MSG_DEBUG, "Interworking: roaming_prio=%u for BSS "
@@ -2519,7 +2519,7 @@ static void interworking_select_network(struct wpa_supplicant *wpa_s)
 		if (!cred)
 			continue;
 
-		if (!wpa_bss_get_ie(bss, WLAN_EID_RSN)) {
+		if (!wpa_bss_get_rsne(wpa_s, bss, NULL, false)) {
 			/*
 			 * We currently support only HS 2.0 networks and those
 			 * are required to use WPA2-Enterprise.
@@ -2674,7 +2674,7 @@ interworking_match_anqp_info(struct wpa_supplicant *wpa_s, struct wpa_bss *bss)
 			continue;
 		if (!(other->flags & WPA_BSS_ANQP_FETCH_TRIED))
 			continue;
-		if (os_memcmp(bss->hessid, other->hessid, ETH_ALEN) != 0)
+		if (!ether_addr_equal(bss->hessid, other->hessid))
 			continue;
 		if (bss->ssid_len != other->ssid_len ||
 		    os_memcmp(bss->ssid, other->ssid, bss->ssid_len) != 0)
@@ -2820,7 +2820,7 @@ int anqp_send_req(struct wpa_supplicant *wpa_s, const u8 *dst, int freq,
 	struct wpa_bss *bss;
 	int res;
 
-	bss = wpa_bss_get_bssid(wpa_s, dst);
+	bss = wpa_bss_get_bssid_latest(wpa_s, dst);
 	if (!bss && !freq) {
 		wpa_printf(MSG_WARNING,
 			   "ANQP: Cannot send query without BSS freq info");
@@ -3169,13 +3169,13 @@ void anqp_resp_cb(void *ctx, const u8 *dst, u8 dialog_token,
 	 */
 	dl_list_for_each_reverse(tmp, &wpa_s->bss, struct wpa_bss, list) {
 		if (tmp == wpa_s->interworking_gas_bss &&
-		    os_memcmp(tmp->bssid, dst, ETH_ALEN) == 0) {
+		    ether_addr_equal(tmp->bssid, dst)) {
 			bss = tmp;
 			break;
 		}
 	}
 	if (bss == NULL)
-		bss = wpa_bss_get_bssid(wpa_s, dst);
+		bss = wpa_bss_get_bssid_latest(wpa_s, dst);
 
 	pos = wpabuf_head(resp);
 	end = pos + wpabuf_len(resp);
@@ -3206,12 +3206,12 @@ void anqp_resp_cb(void *ctx, const u8 *dst, u8 dialog_token,
 	}
 
 out_parse_done:
+	if (bss)
+		wpas_notify_bss_anqp_changed(wpa_s, bss->id);
 #ifdef CONFIG_HS20
 	hs20_notify_parse_done(wpa_s);
 #endif /* CONFIG_HS20 */
 out:
-	wpa_msg(wpa_s, MSG_INFO, ANQP_QUERY_DONE "addr=" MACSTR " result=%s",
-		MAC2STR(dst), anqp_result);
 	wpas_notify_anqp_query_done(wpa_s, dst, anqp_result, bss ? bss->anqp : NULL);
 }
 
@@ -3290,7 +3290,7 @@ int gas_send_request(struct wpa_supplicant *wpa_s, const u8 *dst,
 	u8 query_resp_len_limit = 0;
 
 	freq = wpa_s->assoc_freq;
-	bss = wpa_bss_get_bssid(wpa_s, dst);
+	bss = wpa_bss_get_bssid_latest(wpa_s, dst);
 	if (bss)
 		freq = bss->freq;
 	if (freq <= 0)

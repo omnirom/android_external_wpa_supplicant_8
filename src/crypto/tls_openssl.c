@@ -19,14 +19,16 @@
 #endif
 #endif
 
+#ifndef OPENSSL_NO_ENGINE
+/* OpenSSL 3.0 has moved away from the engine API */
+#define OPENSSL_SUPPRESS_DEPRECATED
+#include <openssl/engine.h>
+#endif /* OPENSSL_NO_ENGINE */
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <openssl/opensslv.h>
 #include <openssl/pkcs12.h>
 #include <openssl/x509v3.h>
-#ifndef OPENSSL_NO_ENGINE
-#include <openssl/engine.h>
-#endif /* OPENSSL_NO_ENGINE */
 #if OPENSSL_VERSION_NUMBER >= 0x30000000L
 #include <openssl/core_names.h>
 #include <openssl/decoder.h>
@@ -152,6 +154,7 @@ struct tls_data {
 	unsigned int crl_reload_interval;
 	struct os_reltime crl_last_reload;
 	char *check_cert_subject;
+	char *openssl_ciphers;
 };
 
 struct tls_connection {
@@ -1261,6 +1264,7 @@ void tls_deinit(void *ssl_ctx)
 	}
 
 	os_free(data->check_cert_subject);
+	os_free(data->openssl_ciphers);
 	os_free(data);
 }
 
@@ -3248,6 +3252,9 @@ static int tls_set_conn_flags(struct tls_connection *conn, unsigned int flags,
 		}
 	}
 #endif
+
+	if (!openssl_ciphers)
+		openssl_ciphers = conn->data->openssl_ciphers;
 
 #ifdef CONFIG_SUITEB
 #ifdef OPENSSL_IS_BORINGSSL
@@ -5749,6 +5756,14 @@ int tls_global_set_params(void *tls_ctx,
 		return -1;
 	}
 
+	os_free(data->openssl_ciphers);
+	if (params->openssl_ciphers) {
+		data->openssl_ciphers = os_strdup(params->openssl_ciphers);
+		if (!data->openssl_ciphers)
+			return -1;
+	} else {
+		data->openssl_ciphers = NULL;
+	}
 	if (params->openssl_ciphers &&
 	    SSL_CTX_set_cipher_list(ssl_ctx, params->openssl_ciphers) != 1) {
 		wpa_printf(MSG_INFO,

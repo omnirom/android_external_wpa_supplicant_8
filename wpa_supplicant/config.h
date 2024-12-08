@@ -48,6 +48,7 @@
 #define DEFAULT_EXTENDED_KEY_ID 0
 #define DEFAULT_BTM_OFFLOAD 0
 #define DEFAULT_SCAN_RES_VALID_FOR_CONNECT 5
+#define DEFAULT_MLD_CONNECT_BAND_PREF MLD_CONNECT_BAND_PREF_AUTO
 
 #include "config_ssid.h"
 #include "wps/wps.h"
@@ -451,7 +452,8 @@ struct wpa_cred {
 #define CFG_CHANGED_WOWLAN_TRIGGERS BIT(18)
 #define CFG_CHANGED_DISABLE_BTM BIT(19)
 #define CFG_CHANGED_BGSCAN BIT(20)
-#define CFG_CHANGED_DISABLE_BTM_NOTIFY BIT(21)
+#define CFG_CHANGED_FT_PREPEND_PMKID BIT(21)
+#define CFG_CHANGED_DISABLE_BTM_NOTIFY BIT(22)
 
 /**
  * struct wpa_config - wpa_supplicant configuration data
@@ -724,6 +726,14 @@ struct wpa_config {
 	 * shall take to set up (unit: seconds).
 	 */
 	unsigned int dot11RSNAConfigSATimeout;
+
+	/**
+	 * ft_prepend_pmkid - Whether to prepend PMKR1Name with PMKIDs
+	 *
+	 * This control whether PMKR1Name is prepended to the PMKID list
+	 * insread of replacing the full list when constructing RSNE for
+	 * EAPOL-Key msg 2/4 for FT cases. */
+	bool ft_prepend_pmkid;
 
 	/**
 	 * update_config - Is wpa_supplicant allowed to update configuration
@@ -1793,6 +1803,19 @@ struct wpa_config {
 	 */
 	int wowlan_disconnect_on_deinit;
 
+	/**
+	 * rsn_overriding - RSN overriding
+	 *
+	 * 0 = Disabled
+	 * 1 = Enabled automatically if the driver indicates support
+	 * 2 = Forced to be enabled even without driver capability indication
+	 */
+	enum rsn_overriding {
+		RSN_OVERRIDING_DISABLED = 0,
+		RSN_OVERRIDING_AUTO = 1,
+		RSN_OVERRIDING_ENABLED = 2,
+	} rsn_overriding;
+
 #ifdef CONFIG_PASN
 #ifdef CONFIG_TESTING_OPTIONS
 	/*
@@ -1806,6 +1829,20 @@ struct wpa_config {
 
 #endif /* CONFIG_TESTING_OPTIONS */
 #endif /* CONFIG_PASN*/
+
+#ifdef CONFIG_TESTING_OPTIONS
+	enum {
+		MLD_CONNECT_BAND_PREF_AUTO = 0,
+		MLD_CONNECT_BAND_PREF_2GHZ = 1,
+		MLD_CONNECT_BAND_PREF_5GHZ = 2,
+		MLD_CONNECT_BAND_PREF_6GHZ = 3,
+		MLD_CONNECT_BAND_PREF_MAX = 4,
+	}  mld_connect_band_pref;
+
+	u8 mld_connect_bssid_pref[ETH_ALEN];
+
+	int mld_force_single_link;
+#endif /* CONFIG_TESTING_OPTIONS */
 };
 
 

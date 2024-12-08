@@ -261,8 +261,10 @@ static void wpas_trigger_scan_cb(struct wpa_radio_work *work, int deinit)
 			wpa_s->scan_res_handler = NULL;
 		}
 
+#ifndef CONFIG_NO_RRM
 		if (wpa_s->beacon_rep_data.token)
 			wpas_rrm_refuse_request(wpa_s);
+#endif /* CONFIG_NO_RRM */
 
 		return;
 	}
@@ -320,6 +322,12 @@ int wpa_supplicant_trigger_scan(struct wpa_supplicant *wpa_s,
 	}
 	wpa_s->last_scan_all_chan = !params->freqs;
 	wpa_s->last_scan_non_coloc_6ghz = params->non_coloc_6ghz;
+
+	if (wpa_s->crossed_6ghz_dom) {
+		wpa_printf(MSG_DEBUG, "First scan after crossing 6 GHz domain");
+		wpa_s->crossed_6ghz_dom = false;
+	}
+
 	if (!ctx ||
 	    radio_add_work(wpa_s, 0, "scan", next, wpas_trigger_scan_cb,
 			   ctx) < 0) {
@@ -696,10 +704,7 @@ static struct wpabuf * wpa_supplicant_ml_probe_ie(int mld_id, u16 links)
 	else
 		wpa_printf(MSG_DEBUG, "MLD: Probing links 0x%04x", links);
 
-	for (link_id = 0; link_id < MAX_NUM_MLD_LINKS; link_id++) {
-		if (!(links & BIT(link_id)))
-			continue;
-
+	for_each_link(links, link_id) {
 		wpabuf_put_u8(extra_ie, EHT_ML_SUB_ELEM_PER_STA_PROFILE);
 
 		/* Subelement length includes only the control */
@@ -2253,7 +2258,6 @@ static int wpas_channel_width_offset(enum chan_width cw)
 static int wpas_channel_width_tx_pwr(const u8 *ies, size_t ies_len,
 				     enum chan_width cw)
 {
-#define MIN(a, b) (a < b ? a : b)
 	int offset = wpas_channel_width_offset(cw);
 	const struct element *elem;
 	int max_tx_power = TX_POWER_NO_CONSTRAINT, tx_pwr = 0;
@@ -2329,7 +2333,6 @@ static int wpas_channel_width_tx_pwr(const u8 *ies, size_t ies_len,
 	}
 
 	return max_tx_power;
-#undef MIN
 }
 
 
@@ -2371,7 +2374,6 @@ int wpas_adjust_snr_by_chanwidth(const u8 *ies, size_t ies_len,
  * better. */
 static int wpa_scan_result_compar(const void *a, const void *b)
 {
-#define MIN(a,b) a < b ? a : b
 	struct wpa_scan_res **_wa = (void *) a;
 	struct wpa_scan_res **_wb = (void *) b;
 	struct wpa_scan_res *wa = *_wa;
@@ -2379,6 +2381,7 @@ static int wpa_scan_result_compar(const void *a, const void *b)
 	int wpa_a, wpa_b;
 	int snr_a, snr_b, snr_a_full, snr_b_full;
 	size_t ies_len;
+	const u8 *rsne_a, *rsne_b;
 
 	/* WPA/WPA2 support preferred */
 	wpa_a = wpa_scan_get_vendor_ie(wa, WPA_IE_VENDOR_TYPE) != NULL ||
@@ -2422,6 +2425,32 @@ static int wpa_scan_result_compar(const void *a, const void *b)
 		snr_b = snr_b_full = wb->level;
 	}
 
+	/* If SNR of a SAE BSS is good or at least as high as the PSK BSS,
+	 * prefer SAE over PSK for mixed WPA3-Personal transition mode and
+	 * WPA2-Personal deployments */
+	rsne_a = wpa_scan_get_ie(wa, WLAN_EID_RSN);
+	rsne_b = wpa_scan_get_ie(wb, WLAN_EID_RSN);
+	if (rsne_a && rsne_b) {
+		struct wpa_ie_data data;
+		bool psk_a = false, psk_b = false, sae_a = false, sae_b = false;
+
+		if (wpa_parse_wpa_ie_rsn(rsne_a, 2 + rsne_a[1], &data) == 0) {
+			psk_a = wpa_key_mgmt_wpa_psk_no_sae(data.key_mgmt);
+			sae_a = wpa_key_mgmt_sae(data.key_mgmt);
+		}
+		if (wpa_parse_wpa_ie_rsn(rsne_b, 2 + rsne_b[1], &data) == 0) {
+			psk_b = wpa_key_mgmt_wpa_psk_no_sae(data.key_mgmt);
+			sae_b = wpa_key_mgmt_sae(data.key_mgmt);
+		}
+
+		if (sae_a && !sae_b && psk_b &&
+		    (snr_a >= GREAT_SNR || snr_a >= snr_b))
+			return -1;
+		if (sae_b && !sae_a && psk_a &&
+		    (snr_b >= GREAT_SNR || snr_b >= snr_a))
+			return 1;
+	}
+
 	/* If SNR is close, decide by max rate or frequency band. For cases
 	 * involving the 6 GHz band, use the throughput estimate irrespective
 	 * of the SNR difference since the LPI/VLP rules may result in
@@ -2448,7 +2477,6 @@ static int wpa_scan_result_compar(const void *a, const void *b)
 	if (snr_b_full == snr_a_full)
 		return wb->qual - wa->qual;
 	return snr_b_full - snr_a_full;
-#undef MIN
 }
 
 
@@ -2573,8 +2601,7 @@ int wpa_supplicant_filter_bssid_match(struct wpa_supplicant *wpa_s,
 		return 1;
 
 	for (i = 0; i < wpa_s->bssid_filter_count; i++) {
-		if (os_memcmp(wpa_s->bssid_filter + i * ETH_ALEN, bssid,
-			      ETH_ALEN) == 0)
+		if (ether_addr_equal(wpa_s->bssid_filter + i * ETH_ALEN, bssid))
 			return 1;
 	}
 
@@ -2582,8 +2609,8 @@ int wpa_supplicant_filter_bssid_match(struct wpa_supplicant *wpa_s,
 }
 
 
-void filter_scan_res(struct wpa_supplicant *wpa_s,
-		     struct wpa_scan_results *res)
+static void filter_scan_res(struct wpa_supplicant *wpa_s,
+			    struct wpa_scan_results *res)
 {
 	size_t i, j;
 
@@ -2878,6 +2905,7 @@ unsigned int wpas_get_est_tpt(const struct wpa_supplicant *wpa_s,
 	 * been taken into account.
 	 */
 	int adjusted_snr;
+	bool ht40 = false, vht80 = false, vht160 = false;
 
 	/* Limit based on estimated SNR */
 	if (rate > 1 * 2 && snr < 1)
@@ -2933,11 +2961,14 @@ unsigned int wpas_get_est_tpt(const struct wpa_supplicant *wpa_s,
 		}
 	}
 
+	ie = get_ie(ies, ies_len, WLAN_EID_HT_OPERATION);
+	if (ie && ie[1] >= 2 &&
+	    (ie[3] & HT_INFO_HT_PARAM_SECONDARY_CHNL_OFF_MASK))
+		ht40 = true;
+
 	if (hw_mode &&
 	    (hw_mode->ht_capab & HT_CAP_INFO_SUPP_CHANNEL_WIDTH_SET)) {
-		ie = get_ie(ies, ies_len, WLAN_EID_HT_OPERATION);
-		if (ie && ie[1] >= 2 &&
-		    (ie[3] & HT_INFO_HT_PARAM_SECONDARY_CHNL_OFF_MASK)) {
+		if (ht40) {
 			*max_cw = CHAN_WIDTH_40;
 			adjusted_snr = snr +
 				wpas_channel_width_rssi_bump(ies, ies_len,
@@ -2948,22 +2979,36 @@ unsigned int wpas_get_est_tpt(const struct wpa_supplicant *wpa_s,
 		}
 	}
 
+	/* Determine VHT BSS bandwidth based on IEEE Std 802.11-2020,
+	 * Table 11-23 (VHT BSS bandwidth) */
+	ie = get_ie(ies, ies_len, WLAN_EID_VHT_OPERATION);
+	if (ie && ie[1] >= 3) {
+		u8 cw = ie[2] & VHT_OPMODE_CHANNEL_WIDTH_MASK;
+		u8 seg0 = ie[3];
+		u8 seg1 = ie[4];
+
+		if (cw)
+			vht80 = true;
+		if (cw == 2 ||
+		    (cw == 3 && (seg1 > 0 && abs(seg1 - seg0) == 16)))
+			vht160 = true;
+		if (cw == 1 &&
+		    ((seg1 > 0 && abs(seg1 - seg0) == 8) ||
+		     (seg1 > 0 && abs(seg1 - seg0) == 16)))
+			vht160 = true;
+	}
+
 	if (hw_mode && hw_mode->vht_capab) {
 		/* Use +1 to assume VHT is always faster than HT */
 		ie = get_ie(ies, ies_len, WLAN_EID_VHT_CAP);
 		if (ie) {
-			bool vht80 = false, vht160 = false;
-
 			if (*max_cw == CHAN_WIDTH_UNKNOWN)
 				*max_cw = CHAN_WIDTH_20;
 			tmp = max_ht20_rate(snr, true) + 1;
 			if (tmp > est)
 				est = tmp;
 
-			ie = get_ie(ies, ies_len, WLAN_EID_HT_OPERATION);
-			if (ie && ie[1] >= 2 &&
-			    (ie[3] &
-			     HT_INFO_HT_PARAM_SECONDARY_CHNL_OFF_MASK)) {
+			if (ht40) {
 				*max_cw = CHAN_WIDTH_40;
 				adjusted_snr = snr +
 					wpas_channel_width_rssi_bump(
@@ -2971,26 +3016,6 @@ unsigned int wpas_get_est_tpt(const struct wpa_supplicant *wpa_s,
 				tmp = max_ht40_rate(adjusted_snr, true) + 1;
 				if (tmp > est)
 					est = tmp;
-			}
-
-			/* Determine VHT BSS bandwidth based on IEEE Std
-			 * 802.11-2020, Table 11-23 (VHT BSs bandwidth) */
-			ie = get_ie(ies, ies_len, WLAN_EID_VHT_OPERATION);
-			if (ie && ie[1] >= 3) {
-				u8 cw = ie[2] & VHT_OPMODE_CHANNEL_WIDTH_MASK;
-				u8 seg0 = ie[3];
-				u8 seg1 = ie[4];
-
-				if (cw)
-					vht80 = true;
-				if (cw == 2 ||
-				    (cw == 3 &&
-				     (seg1 > 0 && abs(seg1 - seg0) == 16)))
-					vht160 = true;
-				if (cw == 1 &&
-				    ((seg1 > 0 && abs(seg1 - seg0) == 8) ||
-				     (seg1 > 0 && abs(seg1 - seg0) == 16)))
-					vht160 = true;
 			}
 
 			if (vht80) {
@@ -3052,9 +3077,10 @@ unsigned int wpas_get_est_tpt(const struct wpa_supplicant *wpa_s,
 
 		cw = he->he_phy_capab_info[HE_PHYCAP_CHANNEL_WIDTH_SET_IDX] &
 			own_he->phy_cap[HE_PHYCAP_CHANNEL_WIDTH_SET_IDX];
-		if (cw &
-		    (IS_2P4GHZ(freq) ? HE_PHYCAP_CHANNEL_WIDTH_SET_40MHZ_IN_2G :
-		     HE_PHYCAP_CHANNEL_WIDTH_SET_40MHZ_80MHZ_IN_5G)) {
+		if ((cw &
+		     (IS_2P4GHZ(freq) ?
+		      HE_PHYCAP_CHANNEL_WIDTH_SET_40MHZ_IN_2G :
+		      HE_PHYCAP_CHANNEL_WIDTH_SET_40MHZ_80MHZ_IN_5G)) && ht40) {
 			if (*max_cw == CHAN_WIDTH_UNKNOWN ||
 			    *max_cw < CHAN_WIDTH_40)
 				*max_cw = CHAN_WIDTH_40;
@@ -3067,7 +3093,8 @@ unsigned int wpas_get_est_tpt(const struct wpa_supplicant *wpa_s,
 		}
 
 		if (!IS_2P4GHZ(freq) &&
-		    (cw & HE_PHYCAP_CHANNEL_WIDTH_SET_40MHZ_80MHZ_IN_5G)) {
+		    (cw & HE_PHYCAP_CHANNEL_WIDTH_SET_40MHZ_80MHZ_IN_5G) &&
+		    (!IS_5GHZ(freq) || vht80)) {
 			if (*max_cw == CHAN_WIDTH_UNKNOWN ||
 			    *max_cw < CHAN_WIDTH_80)
 				*max_cw = CHAN_WIDTH_80;
@@ -3081,7 +3108,8 @@ unsigned int wpas_get_est_tpt(const struct wpa_supplicant *wpa_s,
 
 		if (!IS_2P4GHZ(freq) &&
 		    (cw & (HE_PHYCAP_CHANNEL_WIDTH_SET_160MHZ_IN_5G |
-			   HE_PHYCAP_CHANNEL_WIDTH_SET_80PLUS80MHZ_IN_5G))) {
+			   HE_PHYCAP_CHANNEL_WIDTH_SET_80PLUS80MHZ_IN_5G)) &&
+		    (!IS_5GHZ(freq) || vht160)) {
 			if (*max_cw == CHAN_WIDTH_UNKNOWN ||
 			    *max_cw < CHAN_WIDTH_160)
 				*max_cw = CHAN_WIDTH_160;
@@ -3144,6 +3172,7 @@ void scan_est_throughput(struct wpa_supplicant *wpa_s,
  * @wpa_s: Pointer to wpa_supplicant data
  * @info: Information about what was scanned or %NULL if not available
  * @new_scan: Whether a new scan was performed
+ * @bssid: Return BSS entries only for a single BSSID, %NULL for all
  * Returns: Scan results, %NULL on failure
  *
  * This function request the current scan results from the driver and updates
@@ -3152,13 +3181,14 @@ void scan_est_throughput(struct wpa_supplicant *wpa_s,
  */
 struct wpa_scan_results *
 wpa_supplicant_get_scan_results(struct wpa_supplicant *wpa_s,
-				struct scan_info *info, int new_scan)
+				struct scan_info *info, int new_scan,
+				const u8 *bssid)
 {
 	struct wpa_scan_results *scan_res;
 	size_t i;
 	int (*compar)(const void *, const void *) = wpa_scan_result_compar;
 
-	scan_res = wpa_drv_get_scan_results2(wpa_s);
+	scan_res = wpa_drv_get_scan_results(wpa_s, bssid);
 	if (scan_res == NULL) {
 		wpa_dbg(wpa_s, MSG_DEBUG, "Failed to get scan results");
 		return NULL;
@@ -3216,6 +3246,7 @@ wpa_supplicant_get_scan_results(struct wpa_supplicant *wpa_s,
 /**
  * wpa_supplicant_update_scan_results - Update scan results from the driver
  * @wpa_s: Pointer to wpa_supplicant data
+ * @bssid: Update BSS entries only for a single BSSID, %NULL for all
  * Returns: 0 on success, -1 on failure
  *
  * This function updates the BSS table within wpa_supplicant based on the
@@ -3225,10 +3256,11 @@ wpa_supplicant_get_scan_results(struct wpa_supplicant *wpa_s,
  * needed information to complete the connection (e.g., to perform validation
  * steps in 4-way handshake).
  */
-int wpa_supplicant_update_scan_results(struct wpa_supplicant *wpa_s)
+int wpa_supplicant_update_scan_results(struct wpa_supplicant *wpa_s,
+				       const u8 *bssid)
 {
 	struct wpa_scan_results *scan_res;
-	scan_res = wpa_supplicant_get_scan_results(wpa_s, NULL, 0);
+	scan_res = wpa_supplicant_get_scan_results(wpa_s, NULL, 0, bssid);
 	if (scan_res == NULL)
 		return -1;
 	wpa_scan_results_free(scan_res);
@@ -3325,6 +3357,7 @@ wpa_scan_clone_params(const struct wpa_driver_scan_params *src)
 	params->duration = src->duration;
 	params->duration_mandatory = src->duration_mandatory;
 	params->oce_scan = src->oce_scan;
+	params->link_id = src->link_id;
 
 	if (src->sched_scan_plans_num > 0) {
 		params->sched_scan_plans =

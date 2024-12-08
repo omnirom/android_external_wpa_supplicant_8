@@ -440,9 +440,14 @@ int wpa_supplicant_conf_ap_ht(struct wpa_supplicant *wpa_s,
 		}
 	}
 
-	if (wpa_s->p2p_go_no_pri_sec_switch) {
+#ifdef CONFIG_P2P
+	if (ssid->p2p_group && wpa_s->p2p_go_no_pri_sec_switch) {
 		conf->no_pri_sec_switch = 1;
-	} else if (conf->secondary_channel) {
+		return 0;
+	}
+#endif /* CONFIG_P2P */
+
+	if (conf->secondary_channel) {
 		struct wpa_supplicant *iface;
 
 		for (iface = wpa_s->global->ifaces; iface; iface = iface->next)
@@ -868,7 +873,8 @@ static void ap_wps_event_cb(void *ctx, enum wps_event event,
 
 
 static void ap_sta_authorized_cb(void *ctx, const u8 *mac_addr,
-				 int authorized, const u8 *p2p_dev_addr, const u8 *ip)
+				 int authorized, const u8 *p2p_dev_addr,
+				 const u8 *ip)
 {
 	wpas_notify_sta_authorized(ctx, mac_addr, authorized, p2p_dev_addr, ip);
 }
@@ -1847,6 +1853,8 @@ int ap_ctrl_iface_chanswitch(struct wpa_supplicant *wpa_s, const char *pos)
 
 	if (ret)
 		return ret;
+
+	settings.link_id = -1;
 
 	return ap_switch_channel(wpa_s, &settings);
 }
