@@ -116,19 +116,11 @@ public:
 	void notifyP2pProvisionDiscovery(
 		struct wpa_supplicant *wpa_s, const u8 *dev_addr, int request,
 		enum p2p_prov_disc_status status, u16 config_methods,
-		unsigned int generated_pin, const char *group_ifname);
+		unsigned int generated_pin, const char *group_ifname,
+		u16 pairing_bootstrapping_method);
 	void notifyP2pSdResponse(
 		struct wpa_supplicant *wpa_s, const u8 *sa, u16 update_indic,
 		const u8 *tlvs, size_t tlvs_len);
-	void notifyUsdBasedServiceDiscoveryResult(
-		struct wpa_supplicant *wpa_s, const u8 *peer_addr, int subscribe_id,
-		int peer_publish_id, int srv_proto_type, const u8 *ssi, size_t ssi_len);
-	void notifyUsdBasedServiceDiscoveryTerminated(
-		struct wpa_supplicant *wpa_s, int subscribe_id,
-		int reason);
-	void notifyUsdBasedServiceAdvertisementTerminated(
-		struct wpa_supplicant *wpa_s, int publish_id,
-		int reason);
 	void notifyApStaAuthorized(
 		struct wpa_supplicant *wpa_s, const u8 *sta,
 		const u8 *p2p_dev_addr, const u8 *ip);
@@ -178,6 +170,29 @@ public:
 			unsigned int count, int **scs_resp);
 	void notifyMloLinksInfoChanged(struct wpa_supplicant *wpa_s,
 				       enum mlo_info_change_reason reason);
+	void notifyUsdPublishStarted(struct wpa_supplicant *wpa_s,
+			int cmd_id, int publish_id);
+	void notifyUsdSubscribeStarted(struct wpa_supplicant *wpa_s,
+			int cmd_id, int subscribe_id);
+	void notifyUsdPublishConfigFailed(struct wpa_supplicant *wpa_s,
+			int cmd_id, ISupplicantStaIfaceCallback::UsdConfigErrorCode error_code);
+	void notifyUsdSubscribeConfigFailed(struct wpa_supplicant *wpa_s,
+			int cmd_id, ISupplicantStaIfaceCallback::UsdConfigErrorCode error_code);
+	void notifyUsdServiceDiscovered(struct wpa_supplicant *wpa_s,
+			enum nan_service_protocol_type srv_proto_type,
+			int subscribe_id, int peer_publish_id, const u8 *peer_addr,
+			bool fsd, const u8 *ssi, size_t ssi_len);
+	void notifyUsdPublishReplied(struct wpa_supplicant *wpa_s,
+			enum nan_service_protocol_type srv_proto_type,
+			int publish_id, int peer_subscribe_id,
+			const u8 *peer_addr, const u8 *ssi, size_t ssi_len);
+	void notifyUsdMessageReceived(struct wpa_supplicant *wpa_s, int id,
+			int peer_instance_id, const u8 *peer_addr,
+			const u8 *message, size_t message_len);
+	void notifyUsdPublishTerminated(struct wpa_supplicant *wpa_s,
+			int publish_id, enum nan_de_reason reason);
+	void notifyUsdSubscribeTerminated(struct wpa_supplicant *wpa_s,
+			int subscribe_id, enum nan_de_reason reason);
 
 	// Methods called from aidl objects.
 	int32_t isAidlServiceVersionAtLeast(int32_t expected_version);
@@ -338,10 +353,6 @@ static_assert(
 	WPA_KEY_MGMT_FT_PSK,
 	"KeyMgmt value mismatch");
 static_assert(
-	static_cast<uint32_t>(KeyMgmtMask::OSEN) ==
-	WPA_KEY_MGMT_OSEN,
-	"KeyMgmt value mismatch");
-static_assert(
 	static_cast<uint32_t>(KeyMgmtMask::SAE) ==
 	WPA_KEY_MGMT_SAE,
 	"KeyMgmt value mismatch");
@@ -376,10 +387,6 @@ static_assert(
 static_assert(
 	static_cast<uint32_t>(ProtoMask::RSN) ==
 	WPA_PROTO_RSN,
-	"Proto value mismatch");
-static_assert(
-	static_cast<uint32_t>(ProtoMask::OSEN) ==
-	WPA_PROTO_OSEN,
 	"Proto value mismatch");
 static_assert(
 	static_cast<uint32_t>(ProtoMask::WAPI) ==
@@ -497,11 +504,6 @@ static_assert(
 	static_cast<uint32_t>(
 	Hs20AnqpSubtypes::CONNECTION_CAPABILITY) ==
 	HS20_STYPE_CONNECTION_CAPABILITY,
-	"HS Subtype value mismatch");
-static_assert(
-	static_cast<uint32_t>(
-	Hs20AnqpSubtypes::OSU_PROVIDERS_LIST) ==
-	HS20_STYPE_OSU_PROVIDERS_LIST,
 	"HS Subtype value mismatch");
 
 static_assert(

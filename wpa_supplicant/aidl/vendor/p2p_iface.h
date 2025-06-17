@@ -19,6 +19,7 @@
 #include <aidl/android/hardware/wifi/supplicant/ISupplicantP2pIfaceCallback.h>
 #include <aidl/android/hardware/wifi/supplicant/ISupplicantP2pNetwork.h>
 #include <aidl/android/hardware/wifi/supplicant/MiracastMode.h>
+#include <aidl/android/hardware/wifi/supplicant/P2pPairingBootstrappingMethodMask.h>
 #include <aidl/android/hardware/wifi/supplicant/WpsProvisionMethod.h>
 
 extern "C"
@@ -230,16 +231,20 @@ private:
 		const std::vector<uint8_t>& peer_address,
 		WpsProvisionMethod provision_method,
 		const std::string& pre_selected_pin, bool join_existing_group,
-		bool persistent, uint32_t go_intent);
+		bool persistent, uint32_t go_intent,
+		uint32_t pairing_bootstrapping_method, const std::string& password,
+		uint32_t frequency, bool authorize, const std::string& group_ifname);
 	ndk::ScopedAStatus cancelConnectInternal();
 	ndk::ScopedAStatus provisionDiscoveryInternal(
 		const std::vector<uint8_t>& peer_address,
-		WpsProvisionMethod provision_method);
-	ndk::ScopedAStatus addGroupInternal(bool in_persistent, int32_t in_persistentNetworkId);
+		WpsProvisionMethod provision_method,
+		uint32_t pairingBootstrappingMethod);
+	ndk::ScopedAStatus addGroupInternal(bool in_persistent, int32_t in_persistentNetworkId,
+		bool isP2pV2);
 	ndk::ScopedAStatus addGroupWithConfigInternal(
 		const std::vector<uint8_t>& ssid, const std::string& passphrase,
 		bool persistent, uint32_t freq, const std::vector<uint8_t>& peer_address,
-		bool joinExistingGroup);
+		bool joinExistingGroup, uint32_t key_mgmt_mask);
 	ndk::ScopedAStatus removeGroupInternal(const std::string& group_ifname);
 	ndk::ScopedAStatus rejectInternal(
 		const std::vector<uint8_t>& peer_address);
@@ -248,8 +253,9 @@ private:
 		const std::vector<uint8_t>& go_device_address,
 		const std::vector<uint8_t>& peer_address);
 	ndk::ScopedAStatus reinvokeInternal(
+		const std::vector<uint8_t>& peer_address,
 		int32_t persistent_network_id,
-		const std::vector<uint8_t>& peer_address);
+		int32_t device_identity_entry_id);
 	ndk::ScopedAStatus configureExtListenInternal(
 		uint32_t period_in_millis, uint32_t interval_in_millis);
 	ndk::ScopedAStatus setListenChannelInternal(

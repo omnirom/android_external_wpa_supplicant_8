@@ -39,10 +39,7 @@ cc_library_headers {
 filegroup {
     name: "hs20-osu-client_srcs",
     srcs: [
-        "hs20/client/spp_client.c",
-        "hs20/client/oma_dm_client.c",
         "hs20/client/osu_client.c",
-        "hs20/client/est.c",
         "src/common/wpa_ctrl.c",
         "src/common/wpa_helpers.c",
         "src/crypto/crypto_internal.c",
@@ -76,10 +73,7 @@ filegroup {
 filegroup {
     name: "hs20_client_srcs",
     srcs: [
-        "hs20/client/est.c",
-        "hs20/client/oma_dm_client.c",
         "hs20/client/osu_client.c",
-        "hs20/client/spp_client.c",
         "src/common/wpa_ctrl.c",
         "src/common/wpa_helpers.c",
         "src/crypto/crypto_internal.c",

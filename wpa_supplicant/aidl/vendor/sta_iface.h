@@ -31,6 +31,7 @@ extern "C"
 #include "wpa_supplicant_i.h"
 #include "config.h"
 #include "driver_i.h"
+#include "nan_usd.h"
 #include "wpa.h"
 }
 
@@ -292,8 +293,10 @@ private:
 	::ndk::ScopedAStatus configureMscsInternal(const MscsParams& params);
 	::ndk::ScopedAStatus disableMscsInternal();
 	std::pair<UsdCapabilities, ndk::ScopedAStatus> getUsdCapabilitiesInternal();
-	::ndk::ScopedAStatus startUsdPublishInternal(const UsdPublishConfig& usdPublishConfig);
-	::ndk::ScopedAStatus startUsdSubscribeInternal(const UsdSubscribeConfig& usdSubscribeConfig);
+	::ndk::ScopedAStatus startUsdPublishInternal(
+		int32_t cmdId, const UsdPublishConfig& usdPublishConfig);
+	::ndk::ScopedAStatus startUsdSubscribeInternal(
+		int32_t cmdId, const UsdSubscribeConfig& usdSubscribeConfig);
 	::ndk::ScopedAStatus updateUsdPublishInternal(int32_t publishId,
 		const std::vector<uint8_t>& serviceSpecificInfo);
 	::ndk::ScopedAStatus cancelUsdPublishInternal(int32_t publishId);

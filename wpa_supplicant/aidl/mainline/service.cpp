@@ -9,6 +9,7 @@
 #include <android/binder_manager.h>
 #include <android/binder_process.h>
 
+#include "callback_manager.h"
 #include "mainline_supplicant.h"
 
 extern "C"
@@ -80,6 +81,7 @@ struct wpas_aidl_priv *mainline_aidl_init(struct wpa_global *global) {
     }
 
     wpa_printf(MSG_INFO, "AIDL setup is complete");
+    CallbackManager::initialize(global);
     return priv;
 }
 

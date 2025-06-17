@@ -16,6 +16,7 @@ enum nan_service_protocol_type;
 int hostapd_nan_usd_init(struct hostapd_data *hapd);
 void hostapd_nan_usd_deinit(struct hostapd_data *hapd);
 void hostapd_nan_usd_rx_sdf(struct hostapd_data *hapd, const u8 *src,
+			    const u8 *a3,
 			    unsigned int freq, const u8 *buf, size_t len);
 void hostapd_nan_usd_flush(struct hostapd_data *hapd);
 int hostapd_nan_usd_publish(struct hostapd_data *hapd, const char *service_name,

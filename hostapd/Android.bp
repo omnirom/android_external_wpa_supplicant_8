@@ -12,6 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// The hostapd related modules are split into 2 sections:
+// 1. For cuttlefish series products, start from `hostapd_headers` to `hostapd_cli_srcs`.
+// 2. For non-cuttlefish series products, ex: physical devices created by oems,
+//    the section starts from `hostapd_driver_srcs_default` to the end of this file.
+
 package {
     default_applicable_licenses: [
         "external_wpa_supplicant_8_license",
@@ -29,6 +34,9 @@ license {
     ],
 }
 
+// The section below is for cuttlefish series products. For non-cuttlefish
+// products please update the section starting at `hostapd_driver_srcs_default`.
+// Start of cuttlefish section.
 cc_library_headers {
     name: "hostapd_headers",
     export_include_dirs: [
@@ -363,7 +371,29 @@ prebuilt_etc {
     installable: false,
 }
 
-// For converting the default to soong
+// End of cuttlefish section.
+
+// The section starting below is for non-cuttlefish products.
+// For cuttlefish series please update the section starting from `hostapd_headers`.
+
+// If you need to add a new build setting based on a product config, ex:
+// ifeq ($(BOARD_HOSTAPD_CONFIG_80211W_MFP_OPTIONAL),true)
+//   L_CFLAGS += -DENABLE_HOSTAPD_CONFIG_80211W_MFP_OPTIONAL
+// endif
+
+// In order to export the Makefile variable to soong, you will need to use a `soong_config_set` method
+// under `build/core/board_config_wpa_supplicant.mk`. Ex:
+// ifeq ($(BOARD_HOSTAPD_CONFIG_80211W_MFP_OPTIONAL),true)
+//   $(call soong_config_set_bool,wpa_supplicant_8,board_hostapd_config_80211w_mfp_optional,true)
+// endif
+
+// And then use the select statement in Android.bp to reflect the condition you need, ex:
+// select(soong_config_variable("wpa_supplicant_8", "board_hostapd_config_80211w_mfp_optional"), {
+//     true: ["-DENABLE_HOSTAPD_CONFIG_80211W_MFP_OPTIONAL"],
+//     default: [],
+// })
+
+// Start of non-cuttlefish section
 cc_defaults {
     name: "hostapd_driver_srcs_default",
     srcs: [
@@ -450,6 +480,9 @@ hostapd_cc_defaults_type {
         default: [],
     }) + select(soong_config_variable("wpa_supplicant_8", "hostapd_11ax"), {
         true: ["-DCONFIG_IEEE80211AX"],
+        default: [],
+    }) + select(soong_config_variable("wpa_supplicant_8", "hostapd_11be"), {
+        true: ["-DCONFIG_IEEE80211BE"],
         default: [],
     }) + select(soong_config_variable("wpa_supplicant_8", "board_hostapd_config_80211w_mfp_optional"), {
         true: ["-DENABLE_HOSTAPD_CONFIG_80211W_MFP_OPTIONAL"],
@@ -602,6 +635,10 @@ cc_defaults {
     ] + select(soong_config_variable("wpa_supplicant_8", "hostapd_11ax"), {
         true: ["src/ap/ieee802_11_he.c"],
         default: [],
+    }) +
+    select(soong_config_variable("wpa_supplicant_8", "hostapd_11be"), {
+        true: ["src/ap/ieee802_11_eht.c"],
+        default: [],
     }),
     defaults: [
         "hostapd_driver_srcs_default",
@@ -704,3 +741,5 @@ cc_library_static {
         "hostapd_includes_default",
     ],
 }
+
+// End of non-cuttlefish section

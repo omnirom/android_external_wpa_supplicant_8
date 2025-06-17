@@ -24,6 +24,10 @@ extern "C"
 }
 
 #define P2P_JOIN_LIMIT 3
+#define WPA_KEY_MGMT_P2P_MODE_WFD_PCC (WPA_KEY_MGMT_SAE | WPA_KEY_MGMT_PSK)
+#define IS_P2P_MODE_WFD_PCC_KEY_MGMT(key_mgmt_mask) \
+	((key_mgmt_mask & WPA_KEY_MGMT_P2P_MODE_WFD_PCC) == WPA_KEY_MGMT_P2P_MODE_WFD_PCC)
+#define DEFAULT_QUERY_PERIOD_MS 40
 
 namespace {
 const char kConfigMethodStrPbc[] = "pbc";
@@ -40,8 +44,13 @@ std::function<void()> pending_scan_res_join_callback = NULL;
 
 using aidl::android::hardware::wifi::supplicant::ISupplicantP2pIface;
 using aidl::android::hardware::wifi::supplicant::ISupplicantStaNetwork;
+using aidl::android::hardware::wifi::supplicant::KeyMgmtMask;
 using aidl::android::hardware::wifi::supplicant::MiracastMode;
 using aidl::android::hardware::wifi::supplicant::P2pFrameTypeMask;
+
+constexpr uint32_t kAllowedKeyMgmtMask =
+	(static_cast<uint32_t>(KeyMgmtMask::WPA_PSK) |
+	 static_cast<uint32_t>(KeyMgmtMask::SAE));
 
 uint8_t convertAidlMiracastModeToInternal(
 	MiracastMode mode)
@@ -168,12 +177,22 @@ int joinGroup(
 	const uint8_t *group_owner_bssid,
 	const std::vector<uint8_t>& ssid,
 	const std::string& passphrase,
-	uint32_t freq)
+	uint32_t freq,
+	uint32_t key_mgmt_mask)
 {
 	int ret = 0;
 	int he = wpa_s->conf->p2p_go_he;
 	int vht = wpa_s->conf->p2p_go_vht;
 	int ht40 = wpa_s->conf->p2p_go_ht40 || vht;
+
+	if (key_mgmt_mask != 0 && key_mgmt_mask & ~kAllowedKeyMgmtMask) {
+		return -1;
+	}
+
+	if (key_mgmt_mask == WPA_KEY_MGMT_SAE) {
+		wpa_s->p2p2 = true;
+		wpa_s->p2p_mode = WPA_P2P_MODE_WFD_R2;
+	}
 
 	// Construct a network for adding group.
 	// Group client follows the persistent attribute of Group Owner.
@@ -191,7 +210,8 @@ int joinGroup(
 	if (wpas_p2p_group_add_persistent(
 		wpa_s, wpa_network, 0, 0, freq, 0, ht40, vht,
 		CONF_OPER_CHWIDTH_USE_HT, he, 0, NULL, 0, 0, is6GhzAllowed(wpa_s),
-		P2P_JOIN_LIMIT, isAnyEtherAddr(group_owner_bssid) ? NULL : group_owner_bssid)) {
+		P2P_JOIN_LIMIT, isAnyEtherAddr(group_owner_bssid) ? NULL : group_owner_bssid,
+		NULL, NULL, NULL, 0)) {
 		ret = -1;
 	}
 
@@ -400,7 +420,7 @@ bool P2pIface::isValid()
 		this, SupplicantStatusCode::FAILURE_IFACE_INVALID,
 		&P2pIface::connectInternal, _aidl_return, in_peerAddress,
 		in_provisionMethod, in_preSelectedPin, in_joinExistingGroup,
-		in_persistent, in_goIntent);
+		in_persistent, in_goIntent, 0, "", 0, false, "");
 }
 
 ::ndk::ScopedAStatus P2pIface::cancelConnect()
@@ -417,7 +437,7 @@ bool P2pIface::isValid()
 	return validateAndCall(
 		this, SupplicantStatusCode::FAILURE_IFACE_INVALID,
 		&P2pIface::provisionDiscoveryInternal, in_peerAddress,
-		in_provisionMethod);
+		in_provisionMethod, 0);
 }
 
 ndk::ScopedAStatus P2pIface::addGroup(
@@ -426,7 +446,7 @@ ndk::ScopedAStatus P2pIface::addGroup(
 	return validateAndCall(
 		this, SupplicantStatusCode::FAILURE_IFACE_INVALID,
 		&P2pIface::addGroupInternal, in_persistent,
-		in_persistentNetworkId);
+		in_persistentNetworkId, false);
 }
 
 ::ndk::ScopedAStatus P2pIface::addGroupWithConfig(
@@ -439,7 +459,8 @@ ndk::ScopedAStatus P2pIface::addGroup(
 		this, SupplicantStatusCode::FAILURE_IFACE_INVALID,
 		&P2pIface::addGroupWithConfigInternal, in_ssid,
 		in_pskPassphrase, in_persistent, in_freq,
-		in_peerAddress, in_joinExistingGroup);
+		in_peerAddress, in_joinExistingGroup,
+		static_cast<uint32_t>(KeyMgmtMask::WPA_PSK));
 }
 
 ::ndk::ScopedAStatus P2pIface::removeGroup(
@@ -475,8 +496,8 @@ ndk::ScopedAStatus P2pIface::addGroup(
 {
 	return validateAndCall(
 		this, SupplicantStatusCode::FAILURE_IFACE_INVALID,
-		&P2pIface::reinvokeInternal, in_persistentNetworkId,
-		in_peerAddress);
+		&P2pIface::reinvokeInternal, in_peerAddress, in_persistentNetworkId,
+		-1);
 }
 
 ::ndk::ScopedAStatus P2pIface::configureExtListen(
@@ -1098,13 +1119,38 @@ ndk::ScopedAStatus P2pIface::flushInternal()
 	return ndk::ScopedAStatus::ok();
 }
 
+u16 convertAidlPairingBootstrappingMethodToWpa(uint32_t pairing_bootstrapping_method)
+{
+	switch (pairing_bootstrapping_method) {
+		case P2pPairingBootstrappingMethodMask::BOOTSTRAPPING_OPPORTUNISTIC:
+			return P2P_PBMA_OPPORTUNISTIC;
+		case P2pPairingBootstrappingMethodMask::BOOTSTRAPPING_DISPLAY_PINCODE:
+			return P2P_PBMA_PIN_CODE_DISPLAY;
+		case P2pPairingBootstrappingMethodMask::BOOTSTRAPPING_DISPLAY_PASSPHRASE:
+			return P2P_PBMA_PASSPHRASE_DISPLAY;
+		case P2pPairingBootstrappingMethodMask::BOOTSTRAPPING_KEYPAD_PINCODE:
+			return P2P_PBMA_PIN_CODE_KEYPAD;
+		case P2pPairingBootstrappingMethodMask::BOOTSTRAPPING_KEYPAD_PASSPHRASE:
+			return P2P_PBMA_PASSPHRASE_KEYPAD;
+		case P2pPairingBootstrappingMethodMask::BOOTSTRAPPING_OUT_OF_BAND:
+			return P2P_PBMA_HANDSHAKE_SKIP;
+		default:
+			return 0;
+	}
+}
+
 // This method only implements support for subset (needed by Android framework)
 // of parameters that can be specified for connect.
 std::pair<std::string, ndk::ScopedAStatus> P2pIface::connectInternal(
 	const std::vector<uint8_t>& peer_address,
 	WpsProvisionMethod provision_method,
 	const std::string& pre_selected_pin, bool join_existing_group,
-	bool persistent, uint32_t go_intent)
+	bool persistent, uint32_t go_intent,
+	uint32_t pairing_bootstrapping_method,
+	const std::string& password,
+	uint32_t frequency,
+	bool authorize,
+	const std::string& group_ifname)
 {
 	struct wpa_supplicant* wpa_s = retrieveIfacePtr();
 	if (go_intent > 15) {
@@ -1129,6 +1175,28 @@ std::pair<std::string, ndk::ScopedAStatus> P2pIface::connectInternal(
 		wps_method = WPS_NOT_READY;
 		break;
 	}
+
+	bool p2p2 = false;
+	u16 bootstrap = 0;
+	const char* pairing_password = nullptr;
+	bool skip_prov = false;
+	int auto_join = 0;
+	if (wps_method == WPS_NOT_READY) {
+		bootstrap = convertAidlPairingBootstrappingMethodToWpa(
+			pairing_bootstrapping_method);
+		if (bootstrap == 0) {
+			return {"", createStatus(SupplicantStatusCode::FAILURE_UNKNOWN)};
+		}
+		if (bootstrap == P2P_PBMA_HANDSHAKE_SKIP) {
+			skip_prov = true;
+		}
+		p2p2 = true;
+		pairing_password = password.length() > 0 ? password.data() : nullptr;
+		if (authorize) {
+			auto_join = 1;
+		}
+	}
+
 	int he = wpa_s->conf->p2p_go_he;
 	int vht = wpa_s->conf->p2p_go_vht;
 	int ht40 = wpa_s->conf->p2p_go_ht40 || vht;
@@ -1136,10 +1204,10 @@ std::pair<std::string, ndk::ScopedAStatus> P2pIface::connectInternal(
 	const char* pin =
 		pre_selected_pin.length() > 0 ? pre_selected_pin.data() : nullptr;
 	int new_pin = wpas_p2p_connect(
-		wpa_s, peer_address.data(), pin, wps_method, persistent, false,
-		join_existing_group, false, go_intent_signed, 0, 0, -1, false, ht40,
+		wpa_s, peer_address.data(), pin, wps_method, persistent, auto_join,
+		join_existing_group, authorize, go_intent_signed, 0, 0, -1, false, ht40,
 		vht, CONF_OPER_CHWIDTH_USE_HT, he, edmg, nullptr, 0, is6GhzAllowed(wpa_s),
-		false, 0, NULL);
+		p2p2, bootstrap, pairing_password, skip_prov);
 	if (new_pin < 0) {
 		return {"", createStatus(SupplicantStatusCode::FAILURE_UNKNOWN)};
 	}
@@ -1167,10 +1235,12 @@ ndk::ScopedAStatus P2pIface::cancelConnectInternal()
 
 ndk::ScopedAStatus P2pIface::provisionDiscoveryInternal(
 	const std::vector<uint8_t>& peer_address,
-	WpsProvisionMethod provision_method)
+	WpsProvisionMethod provision_method,
+	uint32_t pairing_bootstrapping_method)
 {
 	struct wpa_supplicant* wpa_s = retrieveIfacePtr();
 	p2ps_provision* prov_param;
+	u16 bootstrap = 0;
 	const char* config_method_str = nullptr;
 	if (peer_address.size() != ETH_ALEN) {
 		return createStatus(SupplicantStatusCode::FAILURE_UNKNOWN);
@@ -1185,13 +1255,18 @@ ndk::ScopedAStatus P2pIface::provisionDiscoveryInternal(
 	case WpsProvisionMethod::KEYPAD:
 		config_method_str = kConfigMethodStrKeypad;
 		break;
-	// TODO Handle pairing bootstrapping method when supplicant implementation is ready
 	case WpsProvisionMethod::NONE:
 		config_method_str = kConfigMethodStrNone;
 		break;
 	}
+	if (provision_method == WpsProvisionMethod::NONE) {
+		bootstrap = convertAidlPairingBootstrappingMethodToWpa(pairing_bootstrapping_method);
+		if (bootstrap == 0) {
+			return createStatus(SupplicantStatusCode::FAILURE_ARGS_INVALID);
+		}
+	}
 	if (wpas_p2p_prov_disc(
-		wpa_s, peer_address.data(), config_method_str,
+		wpa_s, peer_address.data(), config_method_str, bootstrap,
 		WPAS_P2P_PD_FOR_GO_NEG, nullptr)) {
 		return createStatus(SupplicantStatusCode::FAILURE_UNKNOWN);
 	}
@@ -1245,25 +1320,29 @@ ndk::ScopedAStatus P2pIface::inviteInternal(
 }
 
 ndk::ScopedAStatus P2pIface::reinvokeInternal(
+	const std::vector<uint8_t>& peer_address,
 	int32_t persistent_network_id,
-	const std::vector<uint8_t>& peer_address)
+	int32_t device_identity_entry_id)
 {
 	struct wpa_supplicant* wpa_s = retrieveIfacePtr();
+	struct wpa_ssid* ssid = NULL;
 	int he = wpa_s->conf->p2p_go_he;
 	int vht = wpa_s->conf->p2p_go_vht;
 	int ht40 = wpa_s->conf->p2p_go_ht40 || vht;
 	int edmg = wpa_s->conf->p2p_go_edmg;
-	struct wpa_ssid* ssid =
-		wpa_config_get_network(wpa_s->conf, persistent_network_id);
-	if (ssid == NULL || ssid->disabled != 2) {
-		return createStatus(SupplicantStatusCode::FAILURE_NETWORK_UNKNOWN);
-	}
+	bool p2p2 = device_identity_entry_id >= 0 && persistent_network_id == -1;
 	if (peer_address.size() != ETH_ALEN) {
 		return {createStatus(SupplicantStatusCode::FAILURE_UNKNOWN)};
 	}
+	if (!p2p2) {
+		ssid = wpa_config_get_network(wpa_s->conf, persistent_network_id);
+		if (ssid == NULL || ssid->disabled != 2) {
+			return createStatus(SupplicantStatusCode::FAILURE_NETWORK_UNKNOWN);
+		}
+	}
 	if (wpas_p2p_invite(
 		wpa_s, peer_address.data(), ssid, NULL, 0, 0, ht40, vht,
-		CONF_OPER_CHWIDTH_USE_HT, 0, he, edmg, is6GhzAllowed(wpa_s))) {
+		CONF_OPER_CHWIDTH_USE_HT, 0, he, edmg, is6GhzAllowed(wpa_s), p2p2)) {
 		return createStatus(SupplicantStatusCode::FAILURE_UNKNOWN);
 	}
 	return ndk::ScopedAStatus::ok();
@@ -1714,19 +1793,21 @@ ndk::ScopedAStatus P2pIface::saveConfigInternal()
 }
 
 ndk::ScopedAStatus P2pIface::addGroupInternal(
-	bool persistent, int32_t persistent_network_id)
+	bool persistent, int32_t persistent_network_id, bool p2p2)
 {
 	struct wpa_supplicant* wpa_s = retrieveIfacePtr();
 	int he = wpa_s->conf->p2p_go_he;
 	int vht = wpa_s->conf->p2p_go_vht;
 	int ht40 = wpa_s->conf->p2p_go_ht40 || vht;
 	int edmg = wpa_s->conf->p2p_go_edmg;
+	enum wpa_p2p_mode p2p_mode = p2p2 ? WPA_P2P_MODE_WFD_R2 : WPA_P2P_MODE_WFD_R1;
 	struct wpa_ssid* ssid =
 		wpa_config_get_network(wpa_s->conf, persistent_network_id);
 	if (ssid == NULL) {
 		if (wpas_p2p_group_add(
 			wpa_s, persistent, 0, 0, ht40, vht,
-			CONF_OPER_CHWIDTH_USE_HT, he, edmg, is6GhzAllowed(wpa_s))) {
+			CONF_OPER_CHWIDTH_USE_HT, he, edmg, is6GhzAllowed(wpa_s),
+			p2p2, p2p_mode)) {
 			return createStatus(SupplicantStatusCode::FAILURE_UNKNOWN);
 		} else {
 			return ndk::ScopedAStatus::ok();
@@ -1735,7 +1816,8 @@ ndk::ScopedAStatus P2pIface::addGroupInternal(
 		if (wpas_p2p_group_add_persistent(
 			wpa_s, ssid, 0, 0, 0, 0, ht40, vht,
 			CONF_OPER_CHWIDTH_USE_HT, he, edmg, NULL, 0, 0,
-			is6GhzAllowed(wpa_s), 0, NULL)) {
+			is6GhzAllowed(wpa_s), 0, NULL,
+			NULL, NULL, NULL, 0)) {
 			return createStatus(SupplicantStatusCode::FAILURE_NETWORK_UNKNOWN);
 		} else {
 			return ndk::ScopedAStatus::ok();
@@ -1744,10 +1826,21 @@ ndk::ScopedAStatus P2pIface::addGroupInternal(
 	return createStatus(SupplicantStatusCode::FAILURE_UNKNOWN);
 }
 
+enum wpa_p2p_mode convertAidlKeyMgmtMaskToWpaP2pMode(uint32_t key_mgmt_mask)
+{
+	if (IS_P2P_MODE_WFD_PCC_KEY_MGMT(key_mgmt_mask)) {
+		return WPA_P2P_MODE_WFD_PCC;
+	} else if (wpa_key_mgmt_sae(key_mgmt_mask)) {
+		return WPA_P2P_MODE_WFD_R2;
+	} else {
+		return WPA_P2P_MODE_WFD_R1;
+	}
+}
+
 ndk::ScopedAStatus P2pIface::addGroupWithConfigInternal(
 	const std::vector<uint8_t>& ssid, const std::string& passphrase,
 	bool persistent, uint32_t freq, const std::vector<uint8_t>& peer_address,
-	bool joinExistingGroup)
+	bool joinExistingGroup, uint32_t key_mgmt_mask)
 {
 	struct wpa_supplicant* wpa_s = retrieveIfacePtr();
 	int he = wpa_s->conf->p2p_go_he;
@@ -1769,10 +1862,17 @@ ndk::ScopedAStatus P2pIface::addGroupWithConfigInternal(
 			"Passphrase is invalid.");
 	}
 
+	if (key_mgmt_mask != 0 && key_mgmt_mask & ~kAllowedKeyMgmtMask) {
+		return createStatusWithMsg(SupplicantStatusCode::FAILURE_ARGS_INVALID,
+			"Unknown key_mgmt_mask");
+	}
+
+	enum wpa_p2p_mode p2p_mode = convertAidlKeyMgmtMaskToWpaP2pMode(key_mgmt_mask);
+
 	wpa_printf(MSG_DEBUG,
-		    "P2P: Add group with config Role: %s network name: %s freq: %d",
+		    "P2P: Add group with config Role: %s network name: %s freq: %d p2p_mode: %d",
 		    joinExistingGroup ? "CLIENT" : "GO",
-		    wpa_ssid_txt(ssid.data(), ssid.size()), freq);
+		    wpa_ssid_txt(ssid.data(), ssid.size()), freq, p2p_mode);
 	if (!joinExistingGroup) {
 		struct p2p_data *p2p = wpa_s->global->p2p;
 		os_memcpy(p2p->ssid, ssid.data(), ssid.size());
@@ -1785,7 +1885,8 @@ ndk::ScopedAStatus P2pIface::addGroupWithConfigInternal(
 
 		if (wpas_p2p_group_add(
 			wpa_s, persistent, freq, 0, ht40, vht,
-			CONF_OPER_CHWIDTH_USE_HT, he, edmg, is6GhzAllowed(wpa_s))) {
+			CONF_OPER_CHWIDTH_USE_HT, he, edmg, is6GhzAllowed(wpa_s),
+			false, p2p_mode)) {
 			return createStatus(SupplicantStatusCode::FAILURE_UNKNOWN);
 		}
 		return ndk::ScopedAStatus::ok();
@@ -1798,7 +1899,7 @@ ndk::ScopedAStatus P2pIface::addGroupWithConfigInternal(
 		return createStatusWithMsg(SupplicantStatusCode::FAILURE_ARGS_INVALID,
 			"Peer address is invalid.");
 	}
-	if (joinGroup(wpa_s, peer_address.data(), ssid, passphrase, freq)) {
+	if (joinGroup(wpa_s, peer_address.data(), ssid, passphrase, freq, key_mgmt_mask)) {
 		return createStatusWithMsg(SupplicantStatusCode::FAILURE_UNKNOWN,
 			"Failed to start scan.");
 	}
@@ -1979,7 +2080,12 @@ std::pair<std::string, ndk::ScopedAStatus> P2pIface::connectWithParamsInternal(
 		connectInfo.peerAddress.begin(), connectInfo.peerAddress.end()};
 	return connectInternal(peerAddressVec, connectInfo.provisionMethod,
 		connectInfo.preSelectedPin, connectInfo.joinExistingGroup,
-		connectInfo.persistent, connectInfo.goIntent);
+		connectInfo.persistent, connectInfo.goIntent,
+		connectInfo.pairingBootstrappingMethod,
+		connectInfo.password.has_value() ? connectInfo.password.value() : "",
+		connectInfo.frequencyMHz, connectInfo.authorizeConnectionFromPeer,
+		connectInfo.groupInterfaceName.has_value() ?
+			connectInfo.groupInterfaceName.value() : "");
 }
 
 ndk::ScopedAStatus P2pIface::findWithParamsInternal(const P2pDiscoveryInfo& discoveryInfo)
@@ -2015,78 +2121,228 @@ ndk::ScopedAStatus P2pIface::addGroupWithConfigurationParamsInternal(
 		groupConfigurationParams.ssid, groupConfigurationParams.passphrase,
 		groupConfigurationParams.isPersistent, groupConfigurationParams.frequencyMHzOrBand,
 		goInterfaceAddressVec,
-		groupConfigurationParams.joinExistingGroup);
+		groupConfigurationParams.joinExistingGroup,
+		groupConfigurationParams.keyMgmtMask);
 }
 
 ndk::ScopedAStatus P2pIface::createGroupOwnerInternal(
 	const P2pCreateGroupOwnerInfo& groupOwnerInfo)
 {
 	return addGroupInternal(
-		groupOwnerInfo.persistent, groupOwnerInfo.persistentNetworkId);
+		groupOwnerInfo.persistent, groupOwnerInfo.persistentNetworkId,
+		groupOwnerInfo.isP2pV2);
 }
 
 std::pair<int64_t, ndk::ScopedAStatus> P2pIface::getFeatureSetInternal()
 {
-	// TODO Fill the field when supplicant implementation is ready
+	// By default, core supplicant enable WFD R2 and PCC mode for all drivers.
+	// TODO Enable this code once core supplicant implement the configuration flag
+	// to enable/disable the feature for all driver implementations.
+#if 0
+	int64_t featureSet = 0;
+	struct wpa_supplicant* wpa_s = retrieveIfacePtr();
+
+	if (wpa_s->drv_flags2 & WPA_DRIVER_FLAGS2_P2P_FEATURE_V2) {
+		featureSet |= ISupplicantP2pIface::P2P_FEATURE_V2;
+	}
+	if (wpa_s->drv_flags2 & WPA_DRIVER_FLAGS2_P2P_FEATURE_PCC_MODE) {
+		featureSet |= ISupplicantP2pIface::P2P_FEATURE_PCC_MODE_WPA3_COMPATIBILITY;
+	}
+	return {featureSet, ndk::ScopedAStatus::ok()};
+#else
 	return {0, ndk::ScopedAStatus::ok()};
+#endif
 }
 
 std::pair<uint32_t, ndk::ScopedAStatus>
 P2pIface::startUsdBasedServiceDiscoveryInternal(
 	const P2pUsdBasedServiceDiscoveryConfig& serviceDiscoveryConfig)
 {
-	// TODO Fill the field when supplicant implementation is ready
-	return {0, ndk::ScopedAStatus::ok()};
+#ifdef CONFIG_NAN_USD
+	int sessionId;
+	struct wpa_supplicant* wpa_s = retrieveIfacePtr();
+	struct nan_subscribe_params params;
+	struct wpabuf *service_specific_info = NULL;
+
+	os_memset(&params, 0, sizeof(params));
+
+	if (serviceDiscoveryConfig.serviceSpecificInfo.size() > 0) {
+		auto ssiBuffer = misc_utils::convertVectorToWpaBuf(
+			serviceDiscoveryConfig.serviceSpecificInfo);
+		if (ssiBuffer && ssiBuffer.get() != nullptr) {
+			service_specific_info = ssiBuffer.get();
+		}
+	}
+
+	params.active = true;
+	params.ttl = serviceDiscoveryConfig.timeoutInSeconds;
+	params.query_period = DEFAULT_QUERY_PERIOD_MS;
+	if (serviceDiscoveryConfig.bandMask != 0) {
+		// TODO convert band to channel instead of scanning all channel frequencies.
+		params.freq_list = wpas_nan_usd_all_freqs(wpa_s);
+	} else {
+		if (serviceDiscoveryConfig.frequencyListMhz.size() != 0) {
+			params.freq_list = serviceDiscoveryConfig.frequencyListMhz.data();
+		} else {
+			params.freq = NAN_USD_DEFAULT_FREQ;
+		}
+	}
+	sessionId = wpas_nan_usd_subscribe(wpa_s, serviceDiscoveryConfig.serviceName.c_str(),
+					      (enum nan_service_protocol_type)
+						  serviceDiscoveryConfig.serviceProtocolType,
+						  service_specific_info, &params, true);
+	if (service_specific_info != NULL) {
+		freeWpaBuf(service_specific_info);
+	}
+	if (sessionId > 0) {
+		return {sessionId, ndk::ScopedAStatus::ok()};
+	}
+	return {-1, createStatus(SupplicantStatusCode::FAILURE_UNKNOWN)};
+#else
+	return {-1, createStatus(SupplicantStatusCode::FAILURE_UNSUPPORTED)};
+#endif
 }
 
 ndk::ScopedAStatus P2pIface::stopUsdBasedServiceDiscoveryInternal(
 	uint32_t sessionId)
 {
-	// TODO Fill the field when supplicant implementation is ready
+#ifdef CONFIG_NAN_USD
+	wpas_nan_usd_cancel_subscribe(retrieveIfacePtr(), sessionId);
 	return ndk::ScopedAStatus::ok();
+#else
+	return createStatus(SupplicantStatusCode::FAILURE_UNSUPPORTED);
+#endif
 }
 
 std::pair<uint32_t, ndk::ScopedAStatus>
 P2pIface::startUsdBasedServiceAdvertisementInternal(
 	const P2pUsdBasedServiceAdvertisementConfig& serviceAdvertisementConfig)
 {
-	// TODO Fill the field when supplicant implementation is ready
-	return {0, ndk::ScopedAStatus::ok()};
+#ifdef CONFIG_NAN_USD
+	int sessionId;
+	struct wpa_supplicant* wpa_s = retrieveIfacePtr();
+	struct nan_publish_params params;
+	struct wpabuf *service_specific_info = NULL;
+	os_memset(&params, 0, sizeof(params));
+
+	if (serviceAdvertisementConfig.serviceSpecificInfo.size() > 0) {
+		auto ssiBuffer = misc_utils::convertVectorToWpaBuf(
+			serviceAdvertisementConfig.serviceSpecificInfo);
+		if (ssiBuffer && ssiBuffer.get() != nullptr) {
+			service_specific_info = ssiBuffer.get();
+		}
+	}
+
+	params.solicited = true;
+	params.ttl = serviceAdvertisementConfig.timeoutInSeconds;
+	params.freq = serviceAdvertisementConfig.frequencyMHz;
+	sessionId = wpas_nan_usd_publish(wpa_s, serviceAdvertisementConfig.serviceName.c_str(),
+					      (enum nan_service_protocol_type)
+						  serviceAdvertisementConfig.serviceProtocolType,
+						  service_specific_info, &params, true);
+	if (service_specific_info != NULL) {
+		freeWpaBuf(service_specific_info);
+	}
+	if (sessionId > 0) {
+		return {sessionId, ndk::ScopedAStatus::ok()};
+	}
+	return {-1, createStatus(SupplicantStatusCode::FAILURE_UNKNOWN)};
+#else
+	return {-1, createStatus(SupplicantStatusCode::FAILURE_UNSUPPORTED)};
+#endif
 }
 
 ndk::ScopedAStatus P2pIface::stopUsdBasedServiceAdvertisementInternal(
 	uint32_t sessionId)
 {
-	// TODO Fill the field when supplicant implementation is ready
+#ifdef CONFIG_NAN_USD
+	wpas_nan_usd_cancel_publish(retrieveIfacePtr(), sessionId);
 	return ndk::ScopedAStatus::ok();
+#else
+	return createStatus(SupplicantStatusCode::FAILURE_UNSUPPORTED);
+#endif
 }
 
 ndk::ScopedAStatus P2pIface::provisionDiscoveryWithParamsInternal(
 	const P2pProvisionDiscoveryParams& params)
 {
-	// TODO Fill the field when supplicant implementation is ready
-	return ndk::ScopedAStatus::ok();
+	std::vector<uint8_t> peerMacAddressVec {
+		params.peerMacAddress.begin(),
+		params.peerMacAddress.end()};
+	return provisionDiscoveryInternal(peerMacAddressVec, params.provisionMethod,
+		params.pairingBootstrappingMethod);
 }
 
 std::pair<P2pDirInfo, ndk::ScopedAStatus> P2pIface::getDirInfoInternal()
 {
-	// TODO Fill the field when supplicant implementation is ready
 	P2pDirInfo dirInfo = {};
+	char dir_info_buffer[100] = {0};
+	struct wpa_supplicant* wpa_s = retrieveIfacePtr();
+	int id = wpas_p2p_get_dira(wpa_s, dir_info_buffer, sizeof(dir_info_buffer));
+	if (id < 0) {
+		return {dirInfo, createStatus(SupplicantStatusCode::FAILURE_UNKNOWN)};
+	}
+
+	std::istringstream dir_info_ss(dir_info_buffer);
+	std::string mac_str, nonce_str, dir_tag_str;
+	std::vector<uint8_t> mac_addr = std::vector<uint8_t>(ETH_ALEN);
+	std::vector<uint8_t> nonce = std::vector<uint8_t>(DEVICE_IDENTITY_NONCE_LEN);
+	std::vector<uint8_t> dir_tag = std::vector<uint8_t>(DEVICE_IDENTITY_TAG_LEN);
+	// Extract MAC address
+	std::getline(dir_info_ss, mac_str, ' ');
+	if (hexstr2bin(mac_str.c_str(), mac_addr.data(), ETH_ALEN)) {
+		wpa_printf(MSG_ERROR, "Failed to get MAC address from DIR Info");
+		return {dirInfo, createStatusWithMsg(SupplicantStatusCode::FAILURE_UNKNOWN,
+                    "Failed to parse MAC address.")};
+	}
+	// Extract nonce
+	std::getline(dir_info_ss, nonce_str, ' ');
+	if (hexstr2bin(nonce_str.c_str(), nonce.data(), DEVICE_IDENTITY_NONCE_LEN)) {
+		return {dirInfo, createStatusWithMsg(SupplicantStatusCode::FAILURE_UNKNOWN,
+                    "Failed to parse nonce.")};
+	}
+	// Extract dir tag
+	std::getline(dir_info_ss, dir_tag_str, ' ');
+	if (hexstr2bin(dir_tag_str.c_str(), dir_tag.data(), DEVICE_IDENTITY_TAG_LEN)) {
+		return {dirInfo, createStatusWithMsg(SupplicantStatusCode::FAILURE_UNKNOWN,
+                    "Failed to parse dir tag.")};
+	}
+
+	std::copy_n(mac_addr.begin(), ETH_ALEN, dirInfo.deviceInterfaceMacAddress.begin());
+	dirInfo.nonce = nonce;
+	dirInfo.dirTag = dir_tag;
+	dirInfo.cipherVersion = P2pDirInfo::CipherVersion::DIRA_CIPHER_VERSION_128_BIT;
+
 	return {dirInfo, ndk::ScopedAStatus::ok()};
 }
 
 std::pair<int32_t, ndk::ScopedAStatus> P2pIface::validateDirInfoInternal(
 	const P2pDirInfo& dirInfo)
 {
-	// TODO Fill the field when supplicant implementation is ready
-	return {0, ndk::ScopedAStatus::ok()};
+	struct wpa_supplicant* wpa_s = retrieveIfacePtr();
+	if (dirInfo.cipherVersion != P2pDirInfo::CipherVersion::DIRA_CIPHER_VERSION_128_BIT ||
+		dirInfo.deviceInterfaceMacAddress.size() != ETH_ALEN ||
+		dirInfo.nonce.size() != DEVICE_IDENTITY_NONCE_LEN ||
+		dirInfo.dirTag.size() != DEVICE_IDENTITY_TAG_LEN) {
+		return {-1, createStatus(SupplicantStatusCode::FAILURE_ARGS_INVALID)};
+	}
+
+	int32_t id = wpas_p2p_validate_dira(wpa_s, dirInfo.deviceInterfaceMacAddress.data(),
+			DIRA_CIPHER_VERSION_128, dirInfo.nonce.data(), dirInfo.dirTag.data());
+	if (id >= 0) {
+		return {id, ndk::ScopedAStatus::ok()};
+	}
+	return {-1, createStatus(SupplicantStatusCode::FAILURE_UNKNOWN)};
 }
 
 ndk::ScopedAStatus P2pIface::reinvokePersistentGroupInternal(
 	const P2pReinvokePersistentGroupParams& reinvokeGroupParams)
 {
-	// TODO Fill the field when supplicant implementation is ready
-	return ndk::ScopedAStatus::ok();
+	std::vector<uint8_t> peerMacAddressVec {
+		reinvokeGroupParams.peerMacAddress.begin(),
+		reinvokeGroupParams.peerMacAddress.end()};
+	return reinvokeInternal(peerMacAddressVec, reinvokeGroupParams.persistentNetworkId,
+		reinvokeGroupParams.deviceIdentityEntryId);
 }
 
 /**

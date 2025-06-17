@@ -18,13 +18,17 @@
 
 static const u8 nan_network_id[ETH_ALEN] =
 { 0x51, 0x6f, 0x9a, 0x01, 0x00, 0x00 };
-static const u8 wildcard_bssid[ETH_ALEN] =
-{ 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
 
 enum nan_de_service_type {
 	NAN_DE_PUBLISH,
 	NAN_DE_SUBSCRIBE,
 };
+
+static const u8 p2p_network_id[ETH_ALEN] =
+{ 0x51, 0x6f, 0x9a, 0x02, 0x00, 0x00 };
+
+static const u8 wildcard_bssid[ETH_ALEN] =
+{ 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
 
 struct nan_de_service {
 	int id;
@@ -40,11 +44,12 @@ struct nan_de_service {
 	struct os_reltime end_time;
 	struct os_reltime last_multicast;
 	struct os_reltime first_discovered;
-	struct os_reltime last_followup;
 	bool needs_fsd;
 	unsigned int freq;
 	unsigned int default_freq;
 	int *freq_list;
+	u8 a3[ETH_ALEN];
+	bool a3_set;
 
 	/* pauseState information for Publish function */
 	struct os_reltime pause_state_end;
@@ -65,6 +70,7 @@ struct nan_de {
 	u8 nmi[ETH_ALEN];
 	bool offload;
 	bool ap;
+	unsigned int max_listen;
 	struct nan_callbacks cb;
 
 	struct nan_de_service *service[NAN_DE_MAX_SERVICE];
@@ -79,7 +85,20 @@ struct nan_de {
 };
 
 
+bool nan_de_is_nan_network_id(const u8 *addr)
+{
+	return ether_addr_equal(addr, nan_network_id);
+}
+
+
+bool nan_de_is_p2p_network_id(const u8 *addr)
+{
+	return ether_addr_equal(addr, p2p_network_id);
+}
+
+
 struct nan_de * nan_de_init(const u8 *nmi, bool offload, bool ap,
+			    unsigned int max_listen,
 			    const struct nan_callbacks *cb)
 {
 	struct nan_de *de;
@@ -91,6 +110,7 @@ struct nan_de * nan_de_init(const u8 *nmi, bool offload, bool ap,
 	os_memcpy(de->nmi, nmi, ETH_ALEN);
 	de->offload = offload;
 	de->ap = ap;
+	de->max_listen = max_listen ? max_listen : 1000;
 	os_memcpy(&de->cb, cb, sizeof(*cb));
 
 	return de;
@@ -152,6 +172,9 @@ static void nan_de_pause_state(struct nan_de_service *srv, const u8 *peer_addr,
 	wpa_printf(MSG_DEBUG, "NAN: Start pauseState");
 	os_get_reltime(&srv->pause_state_end);
 	srv->pause_state_end.sec += 60;
+	if (os_reltime_initialized(&srv->end_time) &&
+	    os_reltime_before(&srv->end_time, &srv->pause_state_end))
+		srv->pause_state_end = srv->end_time;
 	os_memcpy(srv->sel_peer_addr, peer_addr, ETH_ALEN);
 	srv->sel_peer_id = peer_id;
 }
@@ -206,7 +229,7 @@ static int nan_de_tx(struct nan_de *de, unsigned int freq,
 static void nan_de_tx_sdf(struct nan_de *de, struct nan_de_service *srv,
 			  unsigned int wait_time,
 			  enum nan_service_control_type type,
-			  const u8 *dst, u8 req_instance_id,
+			  const u8 *dst, const u8 *a3, u8 req_instance_id,
 			  const struct wpabuf *ssi)
 {
 	struct wpabuf *buf;
@@ -268,10 +291,7 @@ static void nan_de_tx_sdf(struct nan_de *de, struct nan_de_service *srv,
 		wpabuf_put_buf(buf, srv->elems);
 	}
 
-	/* Wi-Fi Aware specification v4.0 uses NAN Cluster ID as A3 for USD,
-	 * but there is no synchronization in USD as as such, no NAN Cluster
-	 * either. Use Wildcard BSSID instead. */
-	nan_de_tx(de, srv->freq, wait_time, dst, de->nmi, wildcard_bssid, buf);
+	nan_de_tx(de, srv->freq, wait_time, dst, de->nmi, a3, buf);
 	wpabuf_free(buf);
 }
 
@@ -335,6 +355,8 @@ static void nan_de_tx_multicast(struct nan_de *de, struct nan_de_service *srv,
 {
 	enum nan_service_control_type type;
 	unsigned int wait_time = 100;
+	const u8 *network_id;
+	const u8 *bssid;
 
 	if (srv->type == NAN_DE_PUBLISH) {
 		int ms;
@@ -352,7 +374,15 @@ static void nan_de_tx_multicast(struct nan_de *de, struct nan_de_service *srv,
 		return;
 	}
 
-	nan_de_tx_sdf(de, srv, wait_time, type, nan_network_id,
+	if (srv->is_p2p) {
+		network_id = p2p_network_id;
+		bssid = wildcard_bssid;
+	} else {
+		network_id = nan_network_id;
+		bssid = nan_network_id;
+	}
+
+	nan_de_tx_sdf(de, srv, wait_time, type, network_id, bssid,
 		      req_instance_id, srv->ssi);
 	os_get_reltime(&srv->last_multicast);
 }
@@ -398,11 +428,6 @@ static bool nan_de_srv_expired(struct nan_de_service *srv,
 			return false;
 		if (!srv->publish.fsd)
 			return true;
-		if (os_reltime_initialized(&srv->last_followup) &&
-		    !os_reltime_expired(now, &srv->last_followup, 1))
-			return false;
-		if (os_reltime_expired(now, &srv->last_multicast, 1))
-			return true;
 	}
 
 	if (srv->type == NAN_DE_SUBSCRIBE) {
@@ -411,11 +436,6 @@ static bool nan_de_srv_expired(struct nan_de_service *srv,
 		if (!os_reltime_initialized(&srv->first_discovered))
 			return false;
 		if (!srv->needs_fsd)
-			return true;
-		if (os_reltime_initialized(&srv->last_followup) &&
-		    !os_reltime_expired(now, &srv->last_followup, 1))
-			return false;
-		if (os_reltime_expired(now, &srv->first_discovered, 1))
 			return true;
 	}
 
@@ -479,6 +499,16 @@ static int nan_de_srv_time_to_next(struct nan_de *de,
 		tmp = os_reltime_in_ms(&diff);
 		if (next == -1 || tmp < next)
 			next = tmp;
+	}
+
+	if (srv->type == NAN_DE_PUBLISH &&
+	    srv->publish.fsd &&
+	    os_reltime_initialized(&srv->pause_state_end)) {
+		os_reltime_sub(&srv->pause_state_end, now, &diff);
+		tmp = os_reltime_in_ms(&diff);
+		if (next == -1 || tmp < next)
+			next = tmp;
+		return next;
 	}
 
 	tmp = nan_de_next_multicast(de, srv, now);
@@ -583,15 +613,36 @@ static void nan_de_timer(void *eloop_ctx, void *timeout_ctx)
 
 		if (srv->type == NAN_DE_PUBLISH &&
 		    os_reltime_initialized(&srv->pause_state_end) &&
-		    (os_reltime_before(&srv->pause_state_end, &now) ||
-		     (srv->publish.fsd &&
-		      os_reltime_initialized(&srv->last_followup) &&
-		      os_reltime_expired(&now, &srv->last_followup, 1))))
+		    (os_reltime_before(&srv->pause_state_end, &now)))
 			nan_de_unpause_state(srv);
 
 		srv_next = nan_de_srv_time_to_next(de, srv, &now);
 		if (srv_next >= 0 && (next == -1 || srv_next < next))
 			next = srv_next;
+
+		if (srv->type == NAN_DE_PUBLISH &&
+		    srv->publish.fsd &&
+		    os_reltime_initialized(&srv->pause_state_end) &&
+		    de->tx_wait_end_freq == 0 &&
+		    de->listen_freq == 0 && de->ext_listen_freq == 0) {
+			struct os_reltime diff;
+			int duration;
+
+			os_reltime_sub(&srv->pause_state_end, &now, &diff);
+			duration = os_reltime_in_ms(&diff);
+			if (duration < 0)
+				continue;
+			if ((unsigned int) duration > de->max_listen)
+				duration = de->max_listen;
+			if (de->cb.listen(de->cb.ctx, srv->freq, duration) ==
+			    0) {
+				wpa_printf(MSG_DEBUG,
+					   "NAN: Publisher in pauseState - started listen on %u MHz",
+					   srv->freq);
+				de->listen_freq = srv->freq;
+				return;
+			}
+		}
 
 		if (srv_next == 0 && !started && !de->offload &&
 		    de->listen_freq == 0 && de->ext_listen_freq == 0 &&
@@ -629,7 +680,7 @@ static void nan_de_timer(void *eloop_ctx, void *timeout_ctx)
 
 	if (next == 0)
 		next = 1;
-	wpa_printf(MSG_DEBUG, "NAN: Next timer in %u ms", next);
+
 	eloop_register_timeout(next / 1000, (next % 1000) * 1000, nan_de_timer,
 			       de, NULL);
 }
@@ -679,6 +730,10 @@ void nan_de_tx_status(struct nan_de *de, unsigned int freq, const u8 *dst)
 
 void nan_de_tx_wait_ended(struct nan_de *de)
 {
+	if (de->tx_wait_end_freq)
+		wpa_printf(MSG_DEBUG,
+			   "NAN: TX wait for response ended (freq=%u)",
+			   de->tx_wait_end_freq);
 	de->tx_wait_end_freq = 0;
 	nan_de_run_timer(de);
 }
@@ -806,7 +861,7 @@ static void nan_de_process_elem_container(struct nan_de *de, const u8 *buf,
 
 
 static void nan_de_rx_publish(struct nan_de *de, struct nan_de_service *srv,
-			      const u8 *peer_addr, u8 instance_id,
+			      const u8 *peer_addr, const u8 *a3, u8 instance_id,
 			      u8 req_instance_id, u16 sdea_control,
 			      enum nan_service_protocol_type srv_proto_type,
 			      const u8 *ssi, size_t ssi_len)
@@ -877,7 +932,8 @@ static bool nan_de_filter_match(struct nan_de_service *srv,
 
 
 static void nan_de_rx_subscribe(struct nan_de *de, struct nan_de_service *srv,
-				const u8 *peer_addr, u8 instance_id,
+				const u8 *peer_addr, const u8 *a3,
+				u8 instance_id,
 				const u8 *matching_filter,
 				size_t matching_filter_len,
 				enum nan_service_protocol_type srv_proto_type,
@@ -887,6 +943,7 @@ static void nan_de_rx_subscribe(struct nan_de *de, struct nan_de_service *srv,
 	size_t len = 0, sda_len, sdea_len;
 	u8 ctrl = 0;
 	u16 sdea_ctrl = 0;
+	const u8 *network_id;
 
 	/* Publish function processing of a receive Subscribe message */
 
@@ -963,15 +1020,23 @@ static void nan_de_rx_subscribe(struct nan_de *de, struct nan_de_service *srv,
 		wpabuf_put_buf(buf, srv->elems);
 	}
 
-	/* Wi-Fi Aware specification v4.0 uses NAN Cluster ID as A3 for USD,
-	 * but there is no synchronization in USD as as such, no NAN Cluster
-	 * either. Use Wildcard BSSID instead. */
+	if (srv->is_p2p)
+		network_id = p2p_network_id;
+	else
+		network_id = nan_network_id;
+
+	if (srv->publish.solicited_multicast || !a3)
+		a3 = network_id;
+	else if (srv->is_p2p)
+		a3 = de->nmi;
+
 	nan_de_tx(de, srv->freq, 100,
-		  srv->publish.solicited_multicast ? nan_network_id : peer_addr,
-		  de->nmi, wildcard_bssid, buf);
+		  srv->publish.solicited_multicast ? network_id : peer_addr,
+		  de->nmi, a3, buf);
 	wpabuf_free(buf);
 
-	nan_de_pause_state(srv, peer_addr, instance_id);
+	if (!srv->is_p2p)
+		nan_de_pause_state(srv, peer_addr, instance_id);
 
 offload:
 	if (!srv->publish.disable_events && de->cb.replied)
@@ -981,8 +1046,8 @@ offload:
 
 
 static void nan_de_rx_follow_up(struct nan_de *de, struct nan_de_service *srv,
-				const u8 *peer_addr, u8 instance_id,
-				const u8 *ssi, size_t ssi_len)
+				const u8 *peer_addr, const u8 *a3,
+				u8 instance_id, const u8 *ssi, size_t ssi_len)
 {
 	/* Follow-up function processing of a receive Follow-up message for a
 	 * Subscribe or Publish instance */
@@ -997,10 +1062,11 @@ static void nan_de_rx_follow_up(struct nan_de *de, struct nan_de_service *srv,
 		return;
 	}
 
-	os_get_reltime(&srv->last_followup);
-
 	if (srv->type == NAN_DE_PUBLISH && !ssi)
 		nan_de_pause_state(srv, peer_addr, instance_id);
+
+	os_memcpy(srv->a3, a3, ETH_ALEN);
+	srv->a3_set = true;
 
 	if (de->cb.receive)
 		de->cb.receive(de->cb.ctx, srv->id, instance_id, ssi, ssi_len,
@@ -1008,7 +1074,7 @@ static void nan_de_rx_follow_up(struct nan_de *de, struct nan_de_service *srv,
 }
 
 
-static void nan_de_rx_sda(struct nan_de *de, const u8 *peer_addr,
+static void nan_de_rx_sda(struct nan_de *de, const u8 *peer_addr, const u8 *a3,
 			  unsigned int freq, const u8 *buf, size_t len,
 			  const u8 *sda, size_t sda_len)
 {
@@ -1135,20 +1201,20 @@ static void nan_de_rx_sda(struct nan_de *de, const u8 *peer_addr,
 
 		switch (type) {
 		case NAN_SRV_CTRL_PUBLISH:
-			nan_de_rx_publish(de, srv, peer_addr, instance_id,
+			nan_de_rx_publish(de, srv, peer_addr, a3, instance_id,
 					  req_instance_id,
 					  sdea_control, srv_proto_type,
 					  ssi, ssi_len);
 			break;
 		case NAN_SRV_CTRL_SUBSCRIBE:
-			nan_de_rx_subscribe(de, srv, peer_addr, instance_id,
+			nan_de_rx_subscribe(de, srv, peer_addr, a3, instance_id,
 					    matching_filter,
 					    matching_filter_len,
 					    srv_proto_type,
 					    ssi, ssi_len);
 			break;
 		case NAN_SRV_CTRL_FOLLOW_UP:
-			nan_de_rx_follow_up(de, srv, peer_addr, instance_id,
+			nan_de_rx_follow_up(de, srv, peer_addr, a3, instance_id,
 					    ssi, ssi_len);
 			break;
 		}
@@ -1156,8 +1222,8 @@ static void nan_de_rx_sda(struct nan_de *de, const u8 *peer_addr,
 }
 
 
-void nan_de_rx_sdf(struct nan_de *de, const u8 *peer_addr, unsigned int freq,
-		   const u8 *buf, size_t len)
+void nan_de_rx_sdf(struct nan_de *de, const u8 *peer_addr, const u8 *a3,
+		   unsigned int freq, const u8 *buf, size_t len)
 {
 	const u8 *sda;
 	u16 sda_len;
@@ -1179,7 +1245,7 @@ void nan_de_rx_sdf(struct nan_de *de, const u8 *peer_addr, unsigned int freq,
 		sda++;
 		sda_len = WPA_GET_LE16(sda);
 		sda += 2;
-		nan_de_rx_sda(de, peer_addr, freq, buf, len, sda, sda_len);
+		nan_de_rx_sda(de, peer_addr, a3, freq, buf, len, sda, sda_len);
 	}
 }
 
@@ -1360,6 +1426,32 @@ int nan_de_update_publish(struct nan_de *de, int publish_id,
 }
 
 
+int nan_de_unpause_publish(struct nan_de *de, int publish_id,
+			   u8 peer_instance_id, const u8 *peer_addr)
+{
+	struct nan_de_service *srv;
+
+	wpa_printf(MSG_DEBUG,
+		   "NAN: UnpausePublish(publish_id=%d, peer_instance_id=%d peer_addr="
+		   MACSTR ")",
+		   publish_id, peer_instance_id, MAC2STR(peer_addr));
+
+	if (publish_id < 1 || publish_id > NAN_DE_MAX_SERVICE)
+		return -1;
+	srv = de->service[publish_id - 1];
+	if (!srv || srv->type != NAN_DE_PUBLISH)
+		return -1;
+
+	if (srv->sel_peer_id != peer_instance_id ||
+	    !ether_addr_equal(peer_addr, srv->sel_peer_addr) ||
+	    !os_reltime_initialized(&srv->pause_state_end))
+		return -1;
+
+	nan_de_unpause_state(srv);
+	return 0;
+}
+
+
 int nan_de_subscribe(struct nan_de *de, const char *service_name,
 		     enum nan_service_protocol_type srv_proto_type,
 		     const struct wpabuf *ssi, const struct wpabuf *elems,
@@ -1442,6 +1534,8 @@ int nan_de_transmit(struct nan_de *de, int handle,
 		    const u8 *peer_addr, u8 req_instance_id)
 {
 	struct nan_de_service *srv;
+	const u8 *a3;
+	const u8 *network_id;
 
 	if (handle < 1 || handle > NAN_DE_MAX_SERVICE)
 		return -1;
@@ -1450,9 +1544,17 @@ int nan_de_transmit(struct nan_de *de, int handle,
 	if (!srv)
 		return -1;
 
-	nan_de_tx_sdf(de, srv, 100, NAN_SRV_CTRL_FOLLOW_UP,
-		      peer_addr, req_instance_id, ssi);
+	if (srv->is_p2p)
+		network_id = p2p_network_id;
+	else
+		network_id = nan_network_id;
 
-	os_get_reltime(&srv->last_followup);
+	if (srv->a3_set)
+		a3 = srv->a3;
+	else
+		a3 = network_id;
+	nan_de_tx_sdf(de, srv, 100, NAN_SRV_CTRL_FOLLOW_UP,
+		      peer_addr, a3, req_instance_id, ssi);
+
 	return 0;
 }

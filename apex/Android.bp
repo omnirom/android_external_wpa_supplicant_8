@@ -1,0 +1,49 @@
+prebuilt_etc {
+    name: "wpa_supplicant.conf.prebuilt",
+    src: ":wpa_supplicant_template.conf",
+    filename: "wpa_supplicant.conf",
+    relative_install_path: "wifi",
+    installable: false,
+}
+
+genrule {
+    name: "com.android.hardware.hostapd.rc-gen",
+    srcs: ["android.hardware.hostapd.rc"],
+    out: ["com.android.hardware.hostapd.rc"],
+    cmd: "sed -E 's@/vendor/bin@/apex/com.android.hardware.wpa_supplicant/bin@' $(in) > $(out)",
+}
+
+prebuilt_etc {
+    name: "com.android.hardware.hostapd.rc",
+    src: ":com.android.hardware.hostapd.rc-gen",
+    installable: false,
+}
+
+apex {
+    name: "com.android.hardware.wpa_supplicant",
+    manifest: "apex_manifest.json",
+    file_contexts: "file_contexts",
+    // TODO: b/363080108 - Replace placeholder key with release key
+    key: "com.android.hardware.key",
+    certificate: ":com.android.hardware.certificate",
+    updatable: false,
+    vendor: true,
+
+    enabled: select(soong_config_variable("wpa_supplicant_8", "wpa_build_hostapd"), {
+        true: true,
+        default: false,
+    }),
+    binaries: [
+        "wpa_supplicant",
+        "hostapd",
+    ],
+    prebuilts: [
+        "com.android.hardware.wpa_supplicant.rc",
+        "com.android.hardware.hostapd.rc",
+        "wpa_supplicant.conf.prebuilt",
+    ],
+    vintf_fragment_modules: [
+        "android.hardware.wifi.hostapd.xml",
+        "android.hardware.wifi.supplicant.xml",
+    ],
+}

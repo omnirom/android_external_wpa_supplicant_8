@@ -703,7 +703,6 @@ void p2p_process_pcea(struct p2p_data *p2p, struct p2p_message *msg,
 
 	if (dev->info.pcea_cap_info & P2P_PCEA_PMK_CACHING) {
 		dev->info.pairing_config.enable_pairing_cache = true;
-		dev->info.pairing_config.enable_pairing_verification = true;
 	}
 }
 
@@ -781,9 +780,6 @@ static void p2p_process_prov_disc_bootstrap_req(struct p2p_data *p2p,
 
 		if (!dev->req_bootstrap_method) {
 			status = P2P_SC_COMEBACK;
-			if (p2p->cfg->bootstrap_req_rx)
-				p2p->cfg->bootstrap_req_rx(p2p->cfg->cb_ctx,
-							   sa, bootstrap);
 			goto out;
 		}
 	} else {
@@ -849,6 +845,12 @@ static void p2p_process_prov_disc_bootstrap_req(struct p2p_data *p2p,
 
 	wpa_printf(MSG_ERROR, "Bootstrap received %d", bootstrap);
 
+	if (status == P2P_SC_SUCCESS) {
+		dev->role = P2P_ROLE_PAIRING_RESPONDER;
+#ifdef CONFIG_PASN
+		p2p_pasn_initialize(p2p, dev, sa, rx_freq, false, true);
+#endif /* CONFIG_PASN */
+	}
 out:
 	/* Send PD Bootstrapping Response for the PD Request */
 	resp = p2p_build_prov_disc_bootstrap_resp(p2p, dev, msg->dialog_token,
@@ -1641,6 +1643,7 @@ static void p2p_process_prov_disc_bootstrap_resp(struct p2p_data *p2p,
 	size_t cookie_len = 0;
 	const u8 *pos, *cookie;
 	u16 comeback_after;
+	u16 bootstrap = 0;
 
 	/* Parse the P2P status present */
 	if (msg->status)
@@ -1707,16 +1710,24 @@ static void p2p_process_prov_disc_bootstrap_resp(struct p2p_data *p2p,
 		p2p->cfg->register_bootstrap_comeback(p2p->cfg->cb_ctx, sa,
 						      comeback_after);
 		p2p->cfg->send_action_done(p2p->cfg->cb_ctx);
+
+		if (p2p->cfg->bootstrap_rsp_rx)
+			p2p->cfg->bootstrap_rsp_rx(p2p->cfg->cb_ctx, sa, status,
+						   rx_freq, bootstrap);
 		return;
 	}
+
+	/* PBMA response */
+	if (msg->pbma_info_len >= 2)
+		bootstrap = WPA_GET_LE16(msg->pbma_info);
 
 	p2p->cfg->send_action_done(p2p->cfg->cb_ctx);
 	if (dev->flags & P2P_DEV_PD_BEFORE_GO_NEG)
 		dev->flags &= ~P2P_DEV_PD_BEFORE_GO_NEG;
 
-	if (p2p->cfg->bootstrap_completed)
-		p2p->cfg->bootstrap_completed(p2p->cfg->cb_ctx, sa, status,
-					      rx_freq);
+	if (p2p->cfg->bootstrap_rsp_rx)
+		p2p->cfg->bootstrap_rsp_rx(p2p->cfg->cb_ctx, sa, status,
+					   rx_freq, bootstrap);
 }
 
 
@@ -2108,6 +2119,24 @@ int p2p_send_prov_disc_req(struct p2p_data *p2p, struct p2p_device *dev,
 	os_memcpy(p2p->pending_pd_devaddr, dev->info.p2p_device_addr, ETH_ALEN);
 
 	wpabuf_free(req);
+	return 0;
+}
+
+
+int p2p_set_req_bootstrap_method(struct p2p_data *p2p, const u8 *peer_addr,
+				 u16 bootstrap)
+{
+	struct p2p_device *dev;
+
+	dev = p2p_get_device(p2p, peer_addr);
+	if (!dev) {
+		p2p_dbg(p2p, "Bootstrap request for peer " MACSTR
+			" not yet known", MAC2STR(peer_addr));
+		return -1;
+	}
+
+	dev->p2p2 = 1;
+	dev->req_bootstrap_method = bootstrap;
 	return 0;
 }
 

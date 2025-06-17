@@ -7,6 +7,7 @@
  */
 
 #include "aidl/shared/shared_utils.h"
+#include "callback_manager.h"
 #include "mainline_supplicant.h"
 #include "utils.h"
 
@@ -18,14 +19,17 @@ MainlineSupplicant::MainlineSupplicant(struct wpa_global* global) {
     wpa_global_ = global;
 }
 
-ndk::ScopedAStatus MainlineSupplicant::addUsdInterface(const std::string& ifaceName) {
+ndk::ScopedAStatus MainlineSupplicant::addStaInterface(const std::string& ifaceName,
+        std::shared_ptr<IStaInterface>* _aidl_return) {
     if (ifaceName.empty()) {
         wpa_printf(MSG_ERROR, "Empty iface name provided");
         return createStatus(SupplicantStatusCode::FAILURE_ARGS_INVALID);
     }
 
-    if (active_usd_ifaces_.find(ifaceName) != active_usd_ifaces_.end()) {
+    if (active_sta_ifaces_.find(ifaceName) != active_sta_ifaces_.end()) {
         wpa_printf(MSG_INFO, "Interface %s already exists", ifaceName.c_str());
+        std::shared_ptr<IStaInterface> staIface = active_sta_ifaces_[ifaceName];
+        _aidl_return = &staIface;
         return ndk::ScopedAStatus::ok();
     }
 
@@ -46,18 +50,22 @@ ndk::ScopedAStatus MainlineSupplicant::addUsdInterface(const std::string& ifaceN
         return createStatus(SupplicantStatusCode::FAILURE_UNKNOWN);
     }
 
+    std::shared_ptr<IStaInterface> staIface =
+        ndk::SharedRefBase::make<StaIface>(wpa_global_, ifaceName);
+    active_sta_ifaces_[ifaceName] = staIface;
+    *_aidl_return = staIface;
+
     wpa_printf(MSG_INFO, "Interface %s was added successfully", ifaceName.c_str());
-    active_usd_ifaces_.insert(ifaceName);
     return ndk::ScopedAStatus::ok();
 }
 
-ndk::ScopedAStatus MainlineSupplicant::removeUsdInterface(const std::string& ifaceName) {
+ndk::ScopedAStatus MainlineSupplicant::removeStaInterface(const std::string& ifaceName) {
     if (ifaceName.empty()) {
         wpa_printf(MSG_ERROR, "Empty iface name provided");
         return createStatus(SupplicantStatusCode::FAILURE_ARGS_INVALID);
     }
 
-    if (active_usd_ifaces_.find(ifaceName) == active_usd_ifaces_.end()) {
+    if (active_sta_ifaces_.find(ifaceName) == active_sta_ifaces_.end()) {
         wpa_printf(MSG_ERROR, "Interface %s does not exist", ifaceName.c_str());
         return createStatus(SupplicantStatusCode::FAILURE_IFACE_UNKNOWN);
     }
@@ -73,8 +81,13 @@ ndk::ScopedAStatus MainlineSupplicant::removeUsdInterface(const std::string& ifa
         return createStatus(SupplicantStatusCode::FAILURE_UNKNOWN);
     }
 
+    // Remove interface and callback from the internal maps
+    CallbackManager* callbackManager = CallbackManager::getInstance();
+    WPA_ASSERT(callbackManager);
+    callbackManager->unregisterStaIfaceCallback(ifaceName);
+    active_sta_ifaces_.erase(ifaceName);
+
     wpa_printf(MSG_INFO, "Interface %s was removed successfully", ifaceName.c_str());
-    active_usd_ifaces_.erase(ifaceName);
     return ndk::ScopedAStatus::ok();
 }
 

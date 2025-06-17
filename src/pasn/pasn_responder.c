@@ -39,8 +39,9 @@ void pasn_responder_pmksa_cache_deinit(struct rsn_pmksa_cache *pmksa)
 
 
 int pasn_responder_pmksa_cache_add(struct rsn_pmksa_cache *pmksa,
-				   const u8 *own_addr, const u8 *bssid, u8 *pmk,
-				   size_t pmk_len, u8 *pmkid)
+				   const u8 *own_addr, const u8 *bssid,
+				   const u8 *pmk, size_t pmk_len,
+				   const u8 *pmkid)
 {
 	if (pmksa_cache_auth_add(pmksa, pmk, pmk_len, pmkid, NULL, 0, own_addr,
 				 bssid, 0, NULL, WPA_KEY_MGMT_SAE))
@@ -152,7 +153,7 @@ static int pasn_wd_handle_sae_commit(struct pasn_data *pasn,
 		return -1;
 	}
 
-	res = sae_parse_commit(&pasn->sae, data + 6, buf_len - 6, NULL, 0,
+	res = sae_parse_commit(&pasn->sae, data + 6, buf_len - 6, NULL, NULL,
 			       groups, 0, NULL);
 	if (res != WLAN_STATUS_SUCCESS) {
 		wpa_printf(MSG_DEBUG, "PASN: Failed parsing SAE commit");
@@ -251,7 +252,7 @@ static struct wpabuf * pasn_get_sae_wd(struct pasn_data *pasn)
 	wpabuf_put_le16(buf, WLAN_STATUS_SAE_HASH_TO_ELEMENT);
 
 	/* Write the actual commit and update the length accordingly */
-	sae_write_commit(&pasn->sae, buf, NULL, 0);
+	sae_write_commit(&pasn->sae, buf, NULL, NULL);
 	len = wpabuf_len(buf);
 	WPA_PUT_LE16(len_ptr, len - 2);
 
@@ -561,6 +562,9 @@ int handle_auth_pasn_resp(struct pasn_data *pasn, const u8 *own_addr,
 	if (rsnxe_ie)
 		wpabuf_put_data(buf, rsnxe_ie, 2 + rsnxe_ie[1]);
 
+	if (pasn->prepare_data_element && pasn->cb_ctx)
+		pasn->prepare_data_element(pasn->cb_ctx, peer_addr);
+
 	wpa_pasn_add_extra_ies(buf, pasn->extra_ies, pasn->extra_ies_len);
 
 	/* Add the mic */
@@ -636,6 +640,8 @@ done:
 	wpa_printf(MSG_DEBUG,
 		   "PASN: Building frame 2: success; resp STA=" MACSTR,
 		   MAC2STR(peer_addr));
+	wpabuf_free(pasn->frame);
+	pasn->frame = NULL;
 
 	ret = pasn->send_mgmt(pasn->cb_ctx, wpabuf_head_u8(buf),
 			      wpabuf_len(buf), 0, pasn->freq, 0);
@@ -643,7 +649,7 @@ done:
 		wpa_printf(MSG_INFO, "send_auth_reply: Send failed");
 
 	wpabuf_free(rsn_buf);
-	wpabuf_free(buf);
+	pasn->frame = buf;
 	return ret;
 fail:
 	wpabuf_free(wrapped_data_buf);
@@ -734,6 +740,14 @@ int handle_auth_pasn_1(struct pasn_data *pasn,
 		pasn->kdk_len = 0;
 
 	wpa_printf(MSG_DEBUG, "PASN: kdk_len=%zu", pasn->kdk_len);
+
+	if (!ieee802_11_rsnx_capab_len(elems.rsnxe, elems.rsnxe_len,
+				       WLAN_RSNX_CAPAB_KEK_IN_PASN)) {
+		pasn->kek_len = 0;
+		pasn->derive_kek = false;
+	}
+
+	wpa_printf(MSG_DEBUG, "PASN: kek_len=%zu", pasn->kek_len);
 
 	if (!elems.pasn_params || !elems.pasn_params_len) {
 		wpa_printf(MSG_DEBUG,
@@ -1084,6 +1098,11 @@ int handle_auth_pasn_3(struct pasn_data *pasn, const u8 *own_addr,
 		}
 #endif /* CONFIG_FILS */
 		wpabuf_free(wrapped_data);
+	}
+
+	if (pasn_parse_encrypted_data(pasn, (const u8 *) mgmt, len) < 0) {
+		wpa_printf(MSG_DEBUG, "PASN: Encrypted data processing failed");
+		goto fail;
 	}
 
 	wpa_printf(MSG_INFO,

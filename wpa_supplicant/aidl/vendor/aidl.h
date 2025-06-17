@@ -96,6 +96,12 @@ extern "C"
 		struct wpa_supplicant *wpa_s, const u8 *dev_addr, int request,
 		enum p2p_prov_disc_status status, u16 config_methods,
 		unsigned int generated_pin, const char *group_ifname);
+	void wpas_aidl_notify_p2p_bootstrap_request(
+		struct wpa_supplicant *wpa_s, const u8 *dev_addr,
+		int status, u16 bootstrap_method, const char *group_ifname);
+	void wpas_aidl_notify_p2p_bootstrap_response(
+		struct wpa_supplicant *wpa_s, const u8 *dev_addr,
+		int status, u16 bootstrap_method, const char *group_ifname);
 	void wpas_aidl_notify_p2p_sd_response(
 		struct wpa_supplicant *wpa_s, const u8 *sa, u16 update_indic,
 		const u8 *tlvs, size_t tlvs_len);
@@ -157,6 +163,21 @@ extern "C"
 	ssize_t wpas_aidl_list_aliases(const char *prefix, char ***aliases);
 	void wpas_aidl_notify_qos_policy_scs_response(struct wpa_supplicant *wpa_s,
 		unsigned int count, int **scs_resp);
+	void wpas_aidl_notify_usd_service_discovered(struct wpa_supplicant *wpa_s,
+		enum nan_service_protocol_type srv_proto_type,
+		int subscribe_id, int peer_publish_id, const u8 *peer_addr,
+		bool fsd, const u8 *ssi, size_t ssi_len);
+	void wpas_aidl_notify_usd_publish_replied(struct wpa_supplicant *wpa_s,
+		enum nan_service_protocol_type srv_proto_type,
+		int publish_id, int peer_subscribe_id,
+		const u8 *peer_addr, const u8 *ssi, size_t ssi_len);
+	void wpas_aidl_notify_usd_message_received(struct wpa_supplicant *wpa_s, int id,
+		int peer_instance_id, const u8 *peer_addr,
+		const u8 *message, size_t message_len);
+	void wpas_aidl_notify_usd_publish_terminated(struct wpa_supplicant *wpa_s,
+		int publish_id, enum nan_de_reason reason);
+	void wpas_aidl_notify_usd_subscribe_terminated(struct wpa_supplicant *wpa_s,
+		int subscribe_id, enum nan_de_reason reason);
 #else   // CONFIG_CTRL_IFACE_AIDL
 static inline int wpas_aidl_register_interface(struct wpa_supplicant *wpa_s)
 {
@@ -259,6 +280,14 @@ static void wpas_aidl_notify_p2p_provision_discovery(
 	enum p2p_prov_disc_status status, u16 config_methods,
 	unsigned int generated_pin, const char *group_ifname)
 {}
+static void wpas_aidl_notify_p2p_bootstrap_request(
+	struct wpa_supplicant *wpa_s, const u8 *dev_addr,
+	int status, u16 bootstrap_method, const char *group_ifname)
+{}
+static void wpas_aidl_notify_p2p_bootstrap_response(
+	struct wpa_supplicant *wpa_s, const u8 *dev_addr,
+	int status, u16 bootstrap_method, const char *group_ifname)
+{}
 static void wpas_aidl_notify_p2p_sd_response(
 	struct wpa_supplicant *wpa_s, const u8 *sa, u16 update_indic,
 	const u8 *tlvs, size_t tlvs_len)
@@ -357,6 +386,21 @@ static ssize_t wpas_aidl_list_aliases(const char *prefix, char ***aliases)
 }
 static void wpas_aidl_notify_qos_policy_scs_response(struct wpa_supplicant *wpa_s,
 	unsigned int count, int **scs_resp) {}
+static void wpas_aidl_notify_usd_service_discovered(struct wpa_supplicant *wpa_s,
+		enum nan_service_protocol_type srv_proto_type,
+		int subscribe_id, int peer_publish_id, const u8 *peer_addr,
+		bool fsd, const u8 *ssi, size_t ssi_len) {}
+static void wpas_aidl_notify_usd_publish_replied(struct wpa_supplicant *wpa_s,
+		enum nan_service_protocol_type srv_proto_type,
+		int publish_id, int peer_subscribe_id,
+		const u8 *peer_addr, const u8 *ssi, size_t ssi_len) {}
+static void wpas_aidl_notify_usd_message_received(struct wpa_supplicant *wpa_s, int id,
+		int peer_instance_id, const u8 *peer_addr,
+		const u8 *message, size_t message_len) {}
+static void wpas_aidl_notify_usd_publish_terminated(struct wpa_supplicant *wpa_s,
+		int publish_id, enum nan_de_reason reason) {}
+static void wpas_aidl_notify_usd_subscribe_terminated(struct wpa_supplicant *wpa_s,
+		int subscribe_id, enum nan_de_reason reason) {}
 #endif  // CONFIG_CTRL_IFACE_AIDL
 
 #ifdef _cplusplus
