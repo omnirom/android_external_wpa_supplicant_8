@@ -50,6 +50,9 @@ struct nan_callbacks {
 	void (*subscribe_terminated)(void *ctx, int subscribe_id,
 				     enum nan_de_reason reason);
 
+	void (*offload_cancel_publish)(void *ctx, int publish_id);
+	void (*offload_cancel_subscribe)(void *ctx, int subscribe_id);
+
 	void (*receive)(void *ctx, int id, int peer_instance_id,
 			const u8 *ssi, size_t ssi_len,
 			const u8 *peer_addr);
@@ -70,6 +73,7 @@ void nan_de_deinit(struct nan_de *de);
 void nan_de_listen_started(struct nan_de *de, unsigned int freq,
 			   unsigned int duration);
 void nan_de_listen_ended(struct nan_de *de, unsigned int freq);
+void nan_de_update_nmi(struct nan_de *de, const u8 *nmi);
 void nan_de_tx_status(struct nan_de *de, unsigned int freq, const u8 *dst);
 void nan_de_tx_wait_ended(struct nan_de *de);
 

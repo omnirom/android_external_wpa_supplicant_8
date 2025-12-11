@@ -29,10 +29,6 @@
 #include "aidl/vendor/aidl.h"
 #include "aidl/mainline/callback_bridge.h"
 
-#ifdef MAINLINE_SUPPLICANT
-#include "aidl/mainline/service.h"
-#endif
-
 int wpas_notify_supplicant_initialized(struct wpa_global *global)
 {
 #ifdef CONFIG_CTRL_IFACE_DBUS_NEW
@@ -53,12 +49,6 @@ int wpas_notify_supplicant_initialized(struct wpa_global *global)
 	}
 #endif /* CONFIG_AIDL */
 
-#ifdef MAINLINE_SUPPLICANT
-	global->aidl = mainline_aidl_init(global);
-	if (!global->aidl)
-		return -1;
-#endif /* MAINLINE_SUPPLICANT */
-
 	return 0;
 }
 
@@ -74,12 +64,6 @@ void wpas_notify_supplicant_deinitialized(struct wpa_global *global)
 	if (global->aidl)
 		wpas_aidl_deinit(global->aidl);
 #endif /* CONFIG_AIDL */
-
-#ifdef MAINLINE_SUPPLICANT
-	if (global->aidl)
-		mainline_aidl_deinit(global->aidl);
-#endif /* MAINLINE_SUPPLICANT */
-
 }
 
 
@@ -188,12 +172,16 @@ void wpas_notify_mlo_info_change_reason(struct wpa_supplicant *wpa_s,
 }
 
 
-void wpas_notify_auth_status_code(struct wpa_supplicant *wpa_s)
+void wpas_notify_auth_status_code(struct wpa_supplicant *wpa_s, u16 auth_type,
+					u16 auth_transaction, u16 status_code)
 {
 	if (wpa_s->p2p_mgmt)
 		return;
 
 	wpas_dbus_signal_prop_changed(wpa_s, WPAS_DBUS_PROP_AUTH_STATUS_CODE);
+
+	wpas_aidl_notify_auth_status_code(wpa_s, auth_type, auth_transaction,
+					  status_code);
 }
 
 

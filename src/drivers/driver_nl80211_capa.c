@@ -1472,11 +1472,11 @@ static void qca_nl80211_get_features(struct wpa_driver_nl80211_data *drv)
 	if (check_feature(QCA_WLAN_VENDOR_FEATURE_NAN_USD_OFFLOAD, &info))
 		drv->capa.flags2 |= WPA_DRIVER_FLAGS2_NAN_OFFLOAD;
 
-	if (!check_feature(QCA_WLAN_VENDOR_FEATURE_P2P_V2, &info))
-		drv->capa.flags2 &= ~WPA_DRIVER_FLAGS2_P2P_FEATURE_V2;
+	if (check_feature(QCA_WLAN_VENDOR_FEATURE_P2P_V2, &info))
+		drv->capa.flags2 |= WPA_DRIVER_FLAGS2_P2P_FEATURE_V2;
 
-	if (!check_feature(QCA_WLAN_VENDOR_FEATURE_PCC_MODE, &info))
-		drv->capa.flags2 &= ~WPA_DRIVER_FLAGS2_P2P_FEATURE_PCC_MODE;
+	if (check_feature(QCA_WLAN_VENDOR_FEATURE_PCC_MODE, &info))
+		drv->capa.flags2 |= WPA_DRIVER_FLAGS2_P2P_FEATURE_PCC_MODE;
 
 	os_free(info.flags);
 }
@@ -1598,11 +1598,17 @@ int wpa_driver_nl80211_capa(struct wpa_driver_nl80211_data *drv)
 	if (!info.data_tx_status)
 		drv->capa.flags &= ~WPA_DRIVER_FLAGS_EAPOL_TX_STATUS;
 
+	// By default, core supplicant enable WFD R2 and PCC mode for SME non-offload drivers.
+	// TODO Enable this code once the feature is tested on such driver implementations.
+#if 0
 	/* Enable P2P2 and PCC mode capabilities by default for the drivers
-	 * which can't explicitly indicate whether these capabilities are
-	 * supported. */
-	drv->capa.flags2 |= WPA_DRIVER_FLAGS2_P2P_FEATURE_V2;
-	drv->capa.flags2 |= WPA_DRIVER_FLAGS2_P2P_FEATURE_PCC_MODE;
+	 * for which SME runs in wpa_supplicant
+	 */
+	if (drv->capa.flags & WPA_DRIVER_FLAGS_SME) {
+		drv->capa.flags2 |= WPA_DRIVER_FLAGS2_P2P_FEATURE_V2;
+		drv->capa.flags2 |= WPA_DRIVER_FLAGS2_P2P_FEATURE_PCC_MODE;
+	}
+#endif
 
 #ifdef CONFIG_DRIVER_NL80211_QCA
 	if (!(info.capa->flags & WPA_DRIVER_FLAGS_DFS_OFFLOAD))
@@ -2103,7 +2109,8 @@ static int phy_info_band(struct phy_info_arg *phy_info, struct nlattr *nl_band)
 		mode->mode = NUM_HOSTAPD_MODES;
 		mode->flags = HOSTAPD_MODE_FLAG_HT_INFO_KNOWN |
 			HOSTAPD_MODE_FLAG_VHT_INFO_KNOWN |
-			HOSTAPD_MODE_FLAG_HE_INFO_KNOWN;
+			HOSTAPD_MODE_FLAG_HE_INFO_KNOWN |
+			HOSTAPD_MODE_FLAG_EHT_INFO_KNOWN;
 
 		/*
 		 * Unsupported VHT MCS stream is defined as value 3, so the VHT

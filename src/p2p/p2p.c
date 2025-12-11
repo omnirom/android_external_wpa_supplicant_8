@@ -6197,6 +6197,10 @@ void p2p_process_usd_elems(struct p2p_data *p2p, const u8 *ies, u16 ies_len,
 		return;
 	}
 
+	if (os_strlen(msg.device_name) != 0)
+		os_memcpy(dev->info.device_name, msg.device_name,
+			  sizeof(dev->info.device_name));
+
 	dev->p2p2 = true;
 	/* Reset info from old IEs */
 	dev->info.reg_info = 0;
@@ -6468,6 +6472,10 @@ void p2p_pasn_initialize(struct p2p_data *p2p, struct p2p_device *dev,
 					 dev->password);
 	} else if (verify) {
 		pasn->akmp = WPA_KEY_MGMT_SAE;
+		if (p2p->cfg->set_pmksa)
+			p2p->cfg->set_pmksa(p2p->cfg->cb_ctx,
+					    dev->info.p2p_device_addr,
+					    dev->info.dik_id);
 	} else {
 		pasn->akmp = WPA_KEY_MGMT_PASN;
 	}
@@ -6788,6 +6796,12 @@ static int p2p_pasn_handle_action_wrapper(struct p2p_data *p2p,
 			    p2p_validate_dira(p2p, dev, msg.dira,
 					      msg.dira_len)) {
 				struct wpa_ie_data rsn_data;
+
+				if (p2p->cfg->set_pmksa)
+					p2p->cfg->set_pmksa(
+						p2p->cfg->cb_ctx,
+						dev->info.p2p_device_addr,
+						dev->info.dik_id);
 
 				if (wpa_parse_wpa_ie_rsn(elems.rsn_ie - 2,
 							 elems.rsn_ie_len + 2,
@@ -7270,8 +7284,11 @@ int p2p_pasn_auth_rx(struct p2p_data *p2p, const struct ieee80211_mgmt *mgmt,
 	}
 
 	if (!dev->pasn) {
-		p2p_dbg(p2p, "PASN: Uninitialized");
-		return -1;
+		dev->pasn = pasn_data_init();
+		if (!dev->pasn) {
+			p2p_dbg(p2p, "PASN: Uninitialized");
+			return -1;
+		}
 	}
 
 	pasn = dev->pasn;

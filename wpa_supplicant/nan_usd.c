@@ -9,6 +9,7 @@
 #include "utils/includes.h"
 
 #include "utils/common.h"
+#include "utils/eloop.h"
 #include "common/nan_de.h"
 #include "wpa_supplicant_i.h"
 #include "offchannel.h"
@@ -181,6 +182,15 @@ static void wpas_nan_usd_listen_work_done(struct wpa_supplicant *wpa_s)
 }
 
 
+static void wpas_nan_usd_remain_on_channel_timeout(void *eloop_ctx, void *timeout_ctx)
+{
+	struct wpa_supplicant *wpa_s = (struct wpa_supplicant *)eloop_ctx;
+	struct wpas_nan_usd_listen_work *lwork = (struct wpas_nan_usd_listen_work *)timeout_ctx;
+
+	wpas_nan_usd_cancel_remain_on_channel_cb(wpa_s, lwork->freq);
+}
+
+
 static void wpas_nan_usd_start_listen_cb(struct wpa_radio_work *work,
 					 int deinit)
 {
@@ -208,6 +218,9 @@ static void wpas_nan_usd_start_listen_cb(struct wpa_radio_work *work,
 		wpa_printf(MSG_DEBUG,
 			   "NAN: Failed to request the driver to remain on channel (%u MHz) for listen",
 			   lwork->freq);
+		eloop_cancel_timeout(wpas_nan_usd_remain_on_channel_timeout, wpa_s, NULL);
+		/* restart the listen state after a delay */
+		eloop_register_timeout(0, 500, wpas_nan_usd_remain_on_channel_timeout, wpa_s, lwork);
 		wpas_nan_usd_listen_work_done(wpa_s);
 		return;
 	}
@@ -271,12 +284,30 @@ static void wpas_nan_de_publish_terminated(void *ctx, int publish_id,
 }
 
 
+static void wpas_nan_usd_offload_cancel_publish(void *ctx, int publish_id)
+{
+	struct wpa_supplicant *wpa_s = ctx;
+
+	if (wpa_s->drv_flags2 & WPA_DRIVER_FLAGS2_NAN_OFFLOAD)
+		wpas_drv_nan_cancel_publish(wpa_s, publish_id);
+}
+
+
 static void wpas_nan_de_subscribe_terminated(void *ctx, int subscribe_id,
 					     enum nan_de_reason reason)
 {
 	struct wpa_supplicant *wpa_s = ctx;
 
 	wpas_notify_nan_subscribe_terminated(wpa_s, subscribe_id, reason);
+}
+
+
+static void wpas_nan_usd_offload_cancel_subscribe(void *ctx, int subscribe_id)
+{
+	struct wpa_supplicant *wpa_s = ctx;
+
+	if (wpa_s->drv_flags2 & WPA_DRIVER_FLAGS2_NAN_OFFLOAD)
+		wpas_drv_nan_cancel_subscribe(wpa_s, subscribe_id);
 }
 
 
@@ -316,6 +347,8 @@ int wpas_nan_usd_init(struct wpa_supplicant *wpa_s)
 	cb.replied = wpas_nan_de_replied;
 	cb.publish_terminated = wpas_nan_de_publish_terminated;
 	cb.subscribe_terminated = wpas_nan_de_subscribe_terminated;
+	cb.offload_cancel_publish = wpas_nan_usd_offload_cancel_publish;
+	cb.offload_cancel_subscribe = wpas_nan_usd_offload_cancel_subscribe;
 	cb.receive = wpas_nan_de_receive;
 #ifdef CONFIG_P2P
 	cb.process_p2p_usd_elems = wpas_nan_process_p2p_usd_elems;

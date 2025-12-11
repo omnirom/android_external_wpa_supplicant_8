@@ -604,6 +604,14 @@ static void nan_de_timer(void *eloop_ctx, void *timeout_ctx)
 			wpa_printf(MSG_DEBUG, "NAN: Service id %d expired",
 				   srv->id);
 			nan_de_del_srv(de, srv, NAN_DE_REASON_TIMEOUT);
+			if (srv->type == NAN_DE_PUBLISH &&
+			    de->cb.offload_cancel_publish)
+				de->cb.offload_cancel_publish(de->cb.ctx,
+							      srv->id);
+			if (srv->type == NAN_DE_SUBSCRIBE &&
+			    de->cb.offload_cancel_subscribe)
+				de->cb.offload_cancel_subscribe(de->cb.ctx,
+								srv->id);
 			continue;
 		}
 
@@ -718,6 +726,13 @@ void nan_de_listen_ended(struct nan_de *de, unsigned int freq)
 		de->listen_freq = 0;
 		nan_de_run_timer(de);
 	}
+}
+
+
+void nan_de_update_nmi(struct nan_de *de, const u8 *nmi)
+{
+	if (de)
+		os_memcpy(de->nmi, nmi, ETH_ALEN);
 }
 
 
